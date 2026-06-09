@@ -7,7 +7,10 @@
   "scripts": {
     "discover": "node --env-file=.env src/discover.mjs",
     "ingest": "node --env-file=.env src/ingest.mjs",
-    "rate": "node src/rate.mjs"
+    "rate": "node src/rate.mjs",
+    "build:site": "node src/build-site.mjs",
+    "refresh": "npm run discover && npm run ingest && npm run rate && npm run build:site",
+    "serve": "node --env-file-if-exists=.env -e \"import('node:http').then(({default:h})=>import('node:fs').then(({readFileSync,existsSync})=>h.createServer((q,s)=>{let f='site'+(q.url==='/'?'/index.html':q.url.split('?')[0]);if(!existsSync(f)){s.statusCode=404;return s.end('nf')}const t=f.endsWith('.html')?'text/html':f.endsWith('.js')?'text/javascript':f.endsWith('.json')?'application/json':'text/plain';s.setHeader('content-type',t);s.end(readFileSync(f))}).listen(8787,()=>console.log('http://localhost:8787'))))\""
   },
   "dependencies": {
     "glicko2": "^1.2.1"

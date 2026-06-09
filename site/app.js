@@ -52,7 +52,13 @@ function renderLeaderboard() {
 
   const optRegions = ['<option value="">Tutte le aree</option>']
     .concat(regions.map((r) => `<option value="${esc(r)}"${r === uiRegion ? " selected" : ""}>${esc(r)}</option>`)).join("");
-  const optGames = [1, 3, 5, 10].map((n) => `<option value="${n}"${n === uiMinGames ? " selected" : ""}>≥ ${n} partite</option>`).join("");
+  const GAMES_OPTS = [
+    [1, "Almeno 1 partita giocata"],
+    [5, "Almeno 5 partite giocate"],
+    [10, "Almeno 10 partite giocate"],
+    [25, "Almeno 25 partite giocate"],
+  ];
+  const optGames = GAMES_OPTS.map(([n, label]) => `<option value="${n}"${n === uiMinGames ? " selected" : ""}>${label}</option>`).join("");
 
   app.innerHTML = `
     <div class="controls">
@@ -112,6 +118,26 @@ function renderPlayer(id, oppId = null) {
     ? `<div class="card"><h3>${title}</h3><div class="big ${cls}">${esc(rec.oppHandle)} <span class="muted">(${rec.oppRating})</span></div><div class="muted">${esc(rec.eventName)} · ${fdate(rec.date)}</div></div>`
     : `<div class="card"><h3>${title}</h3><div class="muted">—</div></div>`;
 
+  // rivalries: aggregate this player's record against each opponent
+  const tally = new Map();
+  for (const m of ms) {
+    const oid = oppOf(m, id);
+    if (oid == null) continue;
+    if (!tally.has(oid)) tally.set(oid, { oid, w: 0, l: 0, d: 0, g: 0 });
+    const t = tally.get(oid); t.g++;
+    const r = resultFor(m, id);
+    if (r === "W") t.w++; else if (r === "L") t.l++; else t.d++;
+  }
+  const opps = [...tally.values()];
+  const pickMax = (f) => opps.filter((o) => f(o) > 0).sort((a, b) => f(b) - f(a) || b.g - a.g)[0] || null;
+  const worstOpp = pickMax((o) => o.l);                                   // most losses against
+  const bestOpp = pickMax((o) => o.w);                                    // most wins against
+  const mostOpp = opps.slice().sort((a, b) => b.g - a.g)[0] || null;      // most games played
+  const nameOf = (oid) => byId.get(oid)?.handle || "?";
+  const rivalCard = (title, o, line, cls) => o
+    ? `<div class="card"><h3>${title}</h3><div class="big ${cls || ""}"><a href="#/p/${encodeURIComponent(o.oid)}">${esc(nameOf(o.oid))}</a></div><div class="muted">${line(o)}</div></div>`
+    : `<div class="card"><h3>${title}</h3><div class="muted">—</div></div>`;
+
   // recent matches
   const recent = ms.slice(0, 15).map((m) => {
     const r = resultFor(m, id), o = byId.get(oppOf(m, id));
@@ -148,6 +174,11 @@ function renderPlayer(id, oppId = null) {
     <div class="grid">
       ${recCard("Miglior vittoria", bw, "w")}
       ${recCard("Peggior sconfitta", wl, "l")}
+    </div>
+    <div class="grid">
+      ${rivalCard("Peggior avversario", worstOpp, (o) => `${o.l} sconfitte · ${o.w}-${o.l}-${o.d}`, "l")}
+      ${rivalCard("Miglior avversario", bestOpp, (o) => `${o.w} vittorie · ${o.w}-${o.l}-${o.d}`, "w")}
+      ${rivalCard("Più sfide", mostOpp, (o) => `${o.g} partite · ${o.w}-${o.l}-${o.d}`)}
     </div>
     <div class="card"><h3>Scontri diretti</h3>
       <select id="oppSel">${optsOpp}</select>

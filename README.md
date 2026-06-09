@@ -45,12 +45,13 @@ is resolved in `src/build-site.mjs` from three sources, in order:
 
 1. **`nicknames.json`** — manual / opt-in overrides (committed).
 2. **`data/nicknames-resolved.json`** — auto-resolved by `resolve-nicknames.mjs`
-   from account histories: each account contributes the nicknames of itself
-   (`game-user/self`) + every opponent it has faced (`tournament-history`:
-   `opponent_id → opponent_display_name`). Run it for more accounts (any region)
-   and coverage converges to 100% — the same mechanism worldwide, no manual
-   mapping. With one account ≈ 40% of the local base; the rest fall back to:
-3. **Initials** of the real name (e.g. "L. P.") — never the full name.
+   from **v2 round standings**, where `user_event_status.best_identifier` is the
+   player's nickname (next to the stable `player.id`), in bulk for every
+   participant. Readable for ANY event with a single token — no other accounts,
+   no real names. ≈ 95% of players (those who set a nickname); same call works
+   worldwide.
+3. **Initials** of the real name (e.g. "L. P.") — for the few who never set a
+   nickname. Never the full name.
 
 So `site/data.json` contains only nicknames or initials — no real names, no
 emails. (Data minimization → fewer GDPR obligations.)

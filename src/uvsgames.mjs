@@ -128,6 +128,23 @@ export async function getRoundMatches(roundId) {
   return get(`/api/tournament-rounds/${roundId}/include_all_matches/`, { auth: true });
 }
 
+/**
+ * v2 standings for a round (TOKEN). Unlike the v1 match data (which only carries
+ * the real-name `best_identifier`), each entry here exposes BOTH:
+ *   - player.best_identifier            -> the real/account name
+ *   - user_event_status.best_identifier -> the player's NICKNAME (display_name)
+ * keyed by the stable player.id. This is the bulk, per-event source for binding
+ * nicknames to ids — works for any event with just your own token (no real
+ * names ever shown), and the same call works worldwide.
+ */
+export async function getRoundStandingsV2(roundId) {
+  const j = await get(
+    `/api/v2/tournament-rounds/${roundId}/standings/?game_slug=${GAME_SLUG}&page_size=1000`,
+    { auth: true }
+  );
+  return j.standings || j.results || [];
+}
+
 /** The logged-in user's own past event registrations (TOKEN). Handy seed for
  *  discovering Sardinian events you personally attended. */
 export async function getMyPastRegistrations() {

@@ -77,9 +77,24 @@ export async function getEvent(eventId) {
   return get(`/api/magic-events/${eventId}/`);
 }
 
-/** Rounds/phases for an event (TOKEN). */
+/** Rounds/phases for an event (TOKEN). Returns the raw phase list. */
 export async function getEventRounds(eventId) {
   return get(`/api/magic-events/${eventId}/get_all_rounds/`, { auth: true });
+}
+
+/**
+ * Flattened list of round ids for an event (TOKEN). The endpoint returns
+ * "phases", each containing a `rounds[]` array; we flatten to ids in order.
+ * (Some shapes return rounds directly — handled defensively.)
+ */
+export async function getEventRoundIds(eventId) {
+  const phases = await getEventRounds(eventId);
+  const ids = [];
+  for (const ph of Array.isArray(phases) ? phases : []) {
+    if (Array.isArray(ph.rounds)) for (const r of ph.rounds) ids.push(r.id);
+    else if (ph.id != null && ph.round_number != null) ids.push(ph.id); // round-shaped
+  }
+  return ids;
 }
 
 /** All matches (pairings + results) for one round (TOKEN). */
@@ -107,8 +122,18 @@ function inSardiniaBBox(lat, lng) {
   return lat > 38.8 && lat < 41.4 && lng > 8.0 && lng < 10.0;
 }
 
-export function isSardinian(event) {
-  const s = event.store || {};
+// Curated allowlist for store objects that come back WITHOUT an address (e.g.
+// the `store` nested in past-registrations is stripped to id+name). Grows as we
+// confirm stores. Matching is by id (preferred) or name substring.
+export const KNOWN_SARDINIAN_STORE_IDS = new Set([1884 /* GamePeople Quartu */]);
+const KNOWN_SARDINIAN_STORE_NAME =
+  /(dual dimension|nekopon|gamepeople|game people|red forge)/i;
+
+/** Is this STORE in Sardinia? Works on full (address) and stripped shapes. */
+export function isSardinianStore(store) {
+  const s = store || {};
+  if (KNOWN_SARDINIAN_STORE_IDS.has(s.id)) return true;
+  if (KNOWN_SARDINIAN_STORE_NAME.test(s.name || "")) return true;
   if (s.country && s.country !== "IT") return false;
   if (SARD_REGION.test(s.administrative_area_level_1_short || "")) return true;
   if (SARD_PROVINCES.test(s.administrative_area_level_1_short || "")) return true;
@@ -116,6 +141,10 @@ export function isSardinian(event) {
     return inSardiniaBBox(s.latitude, s.longitude);
   }
   return false;
+}
+
+export function isSardinian(event) {
+  return isSardinianStore(event.store);
 }
 
 export const config = { BASE, GAME_SLUG };

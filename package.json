@@ -1,0 +1,15 @@
+{
+  "name": "riftbound-sardegna",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Glicko-2 player rating + public leaderboard for Riftbound 1v1 events in Sardinia. Data from the UVS/Spicerack play API (api.riftbound.uvsgames.com).",
+  "scripts": {
+    "discover": "node --env-file=.env src/discover.mjs",
+    "ingest": "node --env-file=.env src/ingest.mjs",
+    "rate": "node src/rate.mjs"
+  },
+  "dependencies": {
+    "glicko2": "^1.2.1"
+  }
+}

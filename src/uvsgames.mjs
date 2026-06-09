@@ -134,6 +134,33 @@ export async function getMyPastRegistrations() {
   return get(`/api/event-statuses/list_past_registrations/`, { auth: true });
 }
 
+/** The token owner's own game profile (TOKEN): { user, display_name, ... }.
+ *  `display_name` is the player's NICKNAME (e.g. "Sciupy"); `user` is the stable
+ *  player id used throughout the match data. */
+export async function getSelfProfile() {
+  return get(`/api/v2/game-user/self?game_slug=${GAME_SLUG}`, { auth: true });
+}
+
+/**
+ * The token owner's full tournament history (TOKEN). Each match exposes
+ * `opponent_id` + `opponent_display_name` — i.e. clean (stable id -> nickname)
+ * pairs for every opponent this account has faced. This is the only public way
+ * to bind a nickname to a stable id in bulk; aggregating several accounts'
+ * histories converges to full nickname coverage (the worldwide strategy).
+ */
+export async function getMyTournamentHistory() {
+  const out = [];
+  for (let page = 1; page <= 200; page++) {
+    const j = await get(
+      `/api/v2/player/games/${GAME_SLUG}/tournament-history/?game_slug=${GAME_SLUG}&page_size=25&page=${page}`,
+      { auth: true }
+    );
+    out.push(...(j.results || []));
+    if (!j.next) break;
+  }
+  return out;
+}
+
 // --- Classification helpers (client-side, since server filters are ignored) ---
 
 export function isRiftbound(event) {

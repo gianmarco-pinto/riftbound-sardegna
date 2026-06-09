@@ -32,15 +32,28 @@ the backend behind the official Riftbound locator
 
 ## Privacy / GDPR (by design)
 
-The raw results API exposes players' **email and full name**. This project
-**discards** that at ingestion and keeps only:
+The raw results API exposes players' **email and full name**. There is **no
+nickname field** on the platform — every identifier (`best_identifier`,
+`user_identifier`) is the real name as "First L." At ingestion we discard email,
+first name and last name, keeping only the stable `player.id` and that
+name-derived label (used internally, never published as-is).
 
-- the stable internal `player.id`
-- the public handle (`best_identifier`, e.g. "Dave M")
+**The public site never shows real names.** Players have a real **nickname**
+(`display_name`, e.g. "Sciupy") in their game profile, but the platform only
+binds a nickname to a stable id through an account's own data. Display identity
+is resolved in `src/build-site.mjs` from three sources, in order:
 
-Email, first name, and last name never leave `src/normalize.mjs`. The public
-site shows handles only. (Data minimization → fewer GDPR obligations.) An
-opt-out path for the public board is planned.
+1. **`nicknames.json`** — manual / opt-in overrides (committed).
+2. **`data/nicknames-resolved.json`** — auto-resolved by `resolve-nicknames.mjs`
+   from account histories: each account contributes the nicknames of itself
+   (`game-user/self`) + every opponent it has faced (`tournament-history`:
+   `opponent_id → opponent_display_name`). Run it for more accounts (any region)
+   and coverage converges to 100% — the same mechanism worldwide, no manual
+   mapping. With one account ≈ 40% of the local base; the rest fall back to:
+3. **Initials** of the real name (e.g. "L. P.") — never the full name.
+
+So `site/data.json` contains only nicknames or initials — no real names, no
+emails. (Data minimization → fewer GDPR obligations.)
 
 ## Architecture
 

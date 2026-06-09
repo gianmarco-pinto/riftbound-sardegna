@@ -8,9 +8,23 @@
 // Usage:  node src/build-site.mjs
 
 import { db } from "./db.mjs";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 
-const handleOf = (h, id) => h || `Anonimo #${String(id).slice(-4)}`;
+// Nickname sources (id -> nickname), no real names published:
+//  1. nicknames.json            — manual / opt-in overrides (committed)
+//  2. data/nicknames-resolved.json — auto-resolved from account histories
+//     (see resolve-nicknames.mjs; the global, accumulating source)
+//  3. fallback: initials of the real name (never the full name)
+let MANUAL = {}, RESOLVED = {};
+try { MANUAL = JSON.parse(readFileSync("nicknames.json", "utf8")); } catch {}
+try { RESOLVED = JSON.parse(readFileSync("data/nicknames-resolved.json", "utf8")); } catch {}
+
+function initials(name) {
+  if (!name) return "Anonimo";
+  if (/^User\d+$/i.test(name) || name === "Unknown") return "Anonimo";
+  return name.trim().split(/\s+/).filter(Boolean).map((p) => p[0].toUpperCase() + ".").join(" ");
+}
+const handleOf = (realName, id) => MANUAL[String(id)] || RESOLVED[String(id)] || initials(realName);
 
 // --- events (with store + geo) ---
 const eventsRows = db.prepare(`

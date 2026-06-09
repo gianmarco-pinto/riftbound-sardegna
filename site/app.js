@@ -73,7 +73,7 @@ function renderLeaderboard() {
           <td class="rank num">${i + 1}</td>
           <td>${esc(p.handle)}${p.provisional ? '<span class="badge">provvisorio</span>' : ""}</td>
           <td class="num"><span class="elo">${p.rating}</span> <span class="rd">±${p.rd}</span></td>
-          <td class="num">${p.wins}-${p.losses}-${p.draws}</td>
+          <td class="num">${p.wins}-${p.losses}-${p.draws}${p.games ? ` <span class="rd">(${Math.round(100 * p.wins / p.games)}%)</span>` : ""}</td>
           <td class="num">${p.games}</td>
         </tr>`).join("") || `<tr><td colspan="5" class="nores">Nessun giocatore.</td></tr>`}
       </tbody>
@@ -169,7 +169,7 @@ function renderPlayer(id, oppId = null) {
       <h2>${esc(p.handle)}</h2>
       <span class="pbig">${p.rating}</span><span class="rd">±${p.rd}${p.provisional ? '<span class="badge">provvisorio</span>' : ""}</span>
     </div>
-    <div class="muted">Record ${p.wins}-${p.losses}-${p.draws} · ${p.games} partite · aree: ${p.regions.map(esc).join(", ") || "—"}</div>
+    <div class="muted">Record ${p.wins}-${p.losses}-${p.draws}${p.games ? ` · <span class="w">${Math.round(100 * p.wins / p.games)}% V</span> / <span class="l">${Math.round(100 * p.losses / p.games)}% S</span> / <span class="d">${Math.round(100 * p.draws / p.games)}% P</span>` : ""} · ${p.games} partite · aree: ${p.regions.map(esc).join(", ") || "—"}</div>
     ${ratingChart(p.series)}
     <div class="grid">
       ${recCard("Miglior vittoria", bw, "w")}

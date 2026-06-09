@@ -77,6 +77,32 @@ export async function getEvent(eventId) {
   return get(`/api/magic-events/${eventId}/`);
 }
 
+/**
+ * Geographic event search (TOKEN) — the ONE endpoint that honours filters.
+ * Unlike /api/magic-events/ (a fixed unfilterable feed), /api/v2/events/
+ * respects latitude/longitude/num_miles + game_slug + start_date_after/before
+ * and returns distance_in_miles. This is the primitive that scales worldwide:
+ * point it anywhere with any radius.
+ * Returns the full list of raw v2 events (paginated internally).
+ */
+export async function searchEventsGeo({
+  lat, lng, miles = 200, gameSlug = GAME_SLUG,
+  after = "2024-01-01T00:00:00Z", before = "2027-12-31T00:00:00Z",
+  pageSize = 50, maxPages = 80,
+} = {}) {
+  const all = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const qs = new URLSearchParams({
+      latitude: lat, longitude: lng, num_miles: miles, game_slug: gameSlug,
+      start_date_after: after, start_date_before: before, page_size: pageSize, page,
+    });
+    const j = await get(`/api/v2/events/?${qs}`, { auth: true });
+    all.push(...(j.results || []));
+    if (!j.next) break;
+  }
+  return all;
+}
+
 /** Rounds/phases for an event (TOKEN). Returns the raw phase list. */
 export async function getEventRounds(eventId) {
   return get(`/api/magic-events/${eventId}/get_all_rounds/`, { auth: true });
@@ -127,16 +153,21 @@ function inSardiniaBBox(lat, lng) {
 // confirm stores. Matching is by id (preferred) or name substring.
 export const KNOWN_SARDINIAN_STORE_IDS = new Set([1884 /* GamePeople Quartu */]);
 const KNOWN_SARDINIAN_STORE_NAME =
-  /(dual dimension|nekopon|gamepeople|game people|red forge)/i;
+  /(dual dimension|nekopon|gamepeople|game people|red forge|ongame)/i;
 
-/** Is this STORE in Sardinia? Works on full (address) and stripped shapes. */
+/** Is this STORE in Sardinia? Works on full (address) and stripped shapes.
+ *  Country exclusion comes FIRST: an explicitly-foreign store (e.g. a Corsica/FR
+ *  shop within radius) is never Sardinian, whatever its name. The name allowlist
+ *  only helps stripped shapes where country/region are absent. */
 export function isSardinianStore(store) {
   const s = store || {};
+  if (s.country && s.country !== "IT") return false;
   if (KNOWN_SARDINIAN_STORE_IDS.has(s.id)) return true;
   if (KNOWN_SARDINIAN_STORE_NAME.test(s.name || "")) return true;
-  if (s.country && s.country !== "IT") return false;
-  if (SARD_REGION.test(s.administrative_area_level_1_short || "")) return true;
-  if (SARD_PROVINCES.test(s.administrative_area_level_1_short || "")) return true;
+  // region lives in `state` (v2 events) or `administrative_area_level_1_short` (feed)
+  const region = s.state || s.administrative_area_level_1_short || "";
+  if (SARD_REGION.test(region)) return true;
+  if (SARD_PROVINCES.test(region)) return true;
   if (typeof s.latitude === "number" && typeof s.longitude === "number") {
     return inSardiniaBBox(s.latitude, s.longitude);
   }
@@ -145,6 +176,22 @@ export function isSardinianStore(store) {
 
 export function isSardinian(event) {
   return isSardinianStore(event.store);
+}
+
+// Canonicalize region spelling. The source uses "Sardegna", "Sardinia", or a
+// province code (SS/CA/NU/OR/SU) interchangeably; collapse them so regional
+// leaderboards group correctly. (Worldwide: extend this map per country.)
+const IT_REGION_ALIASES = {
+  sardinia: "Sardegna", sardegna: "Sardegna",
+  ss: "Sardegna", ca: "Sardegna", nu: "Sardegna", or: "Sardegna", su: "Sardegna",
+};
+export function normalizeRegion(country, region) {
+  if (!region) return region ?? null;
+  if (country === "IT") {
+    const c = IT_REGION_ALIASES[region.trim().toLowerCase()];
+    if (c) return c;
+  }
+  return region;
 }
 
 export const config = { BASE, GAME_SLUG };

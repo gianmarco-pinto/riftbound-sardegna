@@ -35,6 +35,25 @@ function add(eventId, name, store, date, source) {
   catalog.get(key).sources.add(source);
 }
 
+// storeId -> full geo (the LIST feed is the only place geo is exposed; the event
+// DETAIL endpoint returns a stripped store. We cache geo for ALL stores seen so
+// ingest can tag even historical events that are out of the feed window).
+const storesGeo = new Map();
+function parseCity(fullAddress) {
+  if (!fullAddress) return null;
+  const parts = fullAddress.split(",").map((p) => p.trim()).filter(Boolean);
+  return parts.length >= 4 ? parts[parts.length - 4] : (parts[1] || null);
+}
+function recordStore(s) {
+  if (!s || s.id == null || storesGeo.has(s.id)) return;
+  storesGeo.set(s.id, {
+    id: s.id, name: s.name ?? null, country: s.country ?? null,
+    region: s.administrative_area_level_1_short ?? null, city: parseCity(s.full_address),
+    lat: typeof s.latitude === "number" ? s.latitude : null,
+    lng: typeof s.longitude === "number" ? s.longitude : null,
+  });
+}
+
 // --- Source 1: public feed sweep ---
 console.log(`Sweeping public events feed (max ${MAX_PAGES} pages of ${PAGE_SIZE})...`);
 let page = 1;
@@ -49,6 +68,7 @@ for (let i = 0; i < MAX_PAGES; i++) {
   }
   scanned += res.results.length;
   for (const e of res.results) {
+    recordStore(e.store); // cache geo for every store we see
     if (!isRiftbound(e) || !isSardinian(e)) continue;
     add(e.id, e.name_pretty || e.name || "", e.store?.name || "", e.start_datetime || null, "feed");
   }
@@ -97,4 +117,5 @@ for (const [s, c] of [...byStore.entries()].sort((a, b) => b[1] - a[1])) console
 
 mkdirSync("data", { recursive: true });
 writeFileSync("data/sardinian-events.json", JSON.stringify(rows, null, 2));
-console.log(`\nWrote data/sardinian-events.json (${rows.length} events)`);
+writeFileSync("data/stores.json", JSON.stringify([...storesGeo.values()], null, 2));
+console.log(`\nWrote data/sardinian-events.json (${rows.length} events) and data/stores.json (${storesGeo.size} stores)`);

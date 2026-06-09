@@ -1,0 +1,165 @@
+// Thin data layer over SQLite (Node's built-in node:sqlite).
+//
+// WORLDWIDE-READY BY DESIGN:
+//  - Every event stores its geography (country/region/city/lat/lng) so
+//    leaderboards can be sliced at ANY level (store -> city -> region ->
+//    country -> global) with a WHERE clause. "Sardinia" is never hardcoded.
+//  - Player ratings are GLOBAL (one rating per player); regional boards are
+//    filtered views of the same rating.
+//  - All SQL is kept standard and funnelled through this one file, so swapping
+//    SQLite -> Postgres later means rewriting only this module.
+
+import { DatabaseSync } from "node:sqlite";
+import { mkdirSync } from "node:fs";
+
+mkdirSync("data", { recursive: true });
+
+export const db = new DatabaseSync(process.env.DB_PATH || "data/riftbound.db");
+db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS stores (
+  id      INTEGER PRIMARY KEY,
+  name    TEXT,
+  country TEXT,
+  region  TEXT,
+  city    TEXT,
+  lat     REAL,
+  lng     REAL
+);
+
+CREATE TABLE IF NOT EXISTS players (
+  id         TEXT PRIMARY KEY,      -- platform player.id (globally stable)
+  handle     TEXT,                  -- best_identifier; NO email/real name ever
+  first_seen TEXT,
+  last_seen  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id        INTEGER PRIMARY KEY,
+  name      TEXT,
+  store_id  INTEGER REFERENCES stores(id),
+  date      TEXT,
+  game      TEXT,
+  country   TEXT,
+  region    TEXT,
+  city      TEXT,
+  lat       REAL,
+  lng       REAL
+);
+
+CREATE TABLE IF NOT EXISTS matches (
+  id           INTEGER PRIMARY KEY,  -- matchId -> idempotent dedup
+  event_id     INTEGER REFERENCES events(id),
+  round_id     INTEGER,
+  round_number INTEGER,
+  tbl          INTEGER,
+  date         TEXT,
+  is_bye       INTEGER NOT NULL DEFAULT 0,
+  player_a     TEXT,
+  player_b     TEXT,
+  winner       TEXT                  -- 'A' | 'B' | 'draw' | NULL
+);
+CREATE INDEX IF NOT EXISTS idx_matches_event ON matches(event_id);
+CREATE INDEX IF NOT EXISTS idx_matches_pa ON matches(player_a);
+CREATE INDEX IF NOT EXISTS idx_matches_pb ON matches(player_b);
+
+CREATE TABLE IF NOT EXISTS ratings (
+  player_id   TEXT PRIMARY KEY REFERENCES players(id),
+  rating      REAL, rd REAL, vol REAL,
+  games       INTEGER, wins INTEGER, losses INTEGER, draws INTEGER,
+  last_date   TEXT,
+  provisional INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS rating_snapshots (
+  player_id TEXT REFERENCES players(id),
+  event_id  INTEGER REFERENCES events(id),
+  date      TEXT,
+  rating    REAL, rd REAL, vol REAL,
+  PRIMARY KEY (player_id, event_id)
+);
+`);
+
+// --- prepared upserts ---
+const _store = db.prepare(`
+  INSERT INTO stores (id,name,country,region,city,lat,lng)
+  VALUES (?,?,?,?,?,?,?)
+  ON CONFLICT(id) DO UPDATE SET
+    name=excluded.name, country=excluded.country, region=excluded.region,
+    city=excluded.city, lat=excluded.lat, lng=excluded.lng`);
+export const upsertStore = (s) =>
+  _store.run(s.id, s.name ?? null, s.country ?? null, s.region ?? null, s.city ?? null, s.lat ?? null, s.lng ?? null);
+
+const _event = db.prepare(`
+  INSERT INTO events (id,name,store_id,date,game,country,region,city,lat,lng)
+  VALUES (?,?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(id) DO UPDATE SET
+    name=excluded.name, store_id=excluded.store_id, date=excluded.date, game=excluded.game,
+    country=excluded.country, region=excluded.region, city=excluded.city,
+    lat=excluded.lat, lng=excluded.lng`);
+export const upsertEvent = (e) =>
+  _event.run(e.id, e.name ?? null, e.store_id ?? null, e.date ?? null, e.game ?? null,
+    e.country ?? null, e.region ?? null, e.city ?? null, e.lat ?? null, e.lng ?? null);
+
+const _player = db.prepare(`
+  INSERT INTO players (id,handle,first_seen,last_seen)
+  VALUES (?,?,?,?)
+  ON CONFLICT(id) DO UPDATE SET
+    handle=COALESCE(excluded.handle, players.handle),
+    first_seen=MIN(players.first_seen, excluded.first_seen),
+    last_seen=MAX(players.last_seen, excluded.last_seen)`);
+export const upsertPlayer = (id, handle, date) =>
+  _player.run(id, handle && handle !== "Unknown" ? handle : null, date ?? null, date ?? null);
+
+const _match = db.prepare(`
+  INSERT INTO matches (id,event_id,round_id,round_number,tbl,date,is_bye,player_a,player_b,winner)
+  VALUES (?,?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(id) DO UPDATE SET
+    event_id=excluded.event_id, round_id=excluded.round_id, round_number=excluded.round_number,
+    tbl=excluded.tbl, date=excluded.date, is_bye=excluded.is_bye,
+    player_a=excluded.player_a, player_b=excluded.player_b, winner=excluded.winner`);
+export const upsertMatch = (m) =>
+  _match.run(m.matchId, m.eventId ?? null, m.roundId ?? null, m.roundNumber ?? null,
+    m.table ?? null, m.date ?? null, m.isBye ? 1 : 0,
+    m.playerA?.id ?? null, m.playerB?.id ?? null, m.winner ?? null);
+
+// --- rating writers ---
+export const clearRatings = () => { db.exec("DELETE FROM ratings; DELETE FROM rating_snapshots;"); };
+const _rating = db.prepare(`
+  INSERT INTO ratings (player_id,rating,rd,vol,games,wins,losses,draws,last_date,provisional)
+  VALUES (?,?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(player_id) DO UPDATE SET
+    rating=excluded.rating, rd=excluded.rd, vol=excluded.vol, games=excluded.games,
+    wins=excluded.wins, losses=excluded.losses, draws=excluded.draws,
+    last_date=excluded.last_date, provisional=excluded.provisional`);
+export const upsertRating = (r) =>
+  _rating.run(r.player_id, r.rating, r.rd, r.vol, r.games, r.wins, r.losses, r.draws, r.last_date, r.provisional ? 1 : 0);
+
+const _snap = db.prepare(`
+  INSERT INTO rating_snapshots (player_id,event_id,date,rating,rd,vol)
+  VALUES (?,?,?,?,?,?)
+  ON CONFLICT(player_id,event_id) DO UPDATE SET
+    date=excluded.date, rating=excluded.rating, rd=excluded.rd, vol=excluded.vol`);
+export const insertSnapshot = (s) => _snap.run(s.player_id, s.event_id, s.date, s.rating, s.rd, s.vol);
+
+// --- readers ---
+export const allRatedMatches = () => db.prepare(`
+  SELECT id AS matchId, event_id AS eventId, round_number AS roundNumber, date,
+         player_a AS playerA, player_b AS playerB, winner
+  FROM matches
+  WHERE is_bye = 0 AND winner IS NOT NULL AND player_a IS NOT NULL AND player_b IS NOT NULL
+  ORDER BY date ASC, event_id ASC, round_number ASC`).all();
+
+export const eventDates = () => {
+  const rows = db.prepare("SELECT id, date FROM events").all();
+  const m = new Map();
+  for (const r of rows) m.set(r.id, r.date);
+  return m;
+};
+
+export const transaction = (fn) => {
+  db.exec("BEGIN");
+  try { const r = fn(); db.exec("COMMIT"); return r; }
+  catch (e) { db.exec("ROLLBACK"); throw e; }
+};

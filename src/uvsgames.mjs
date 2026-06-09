@@ -196,22 +196,26 @@ function inSardiniaBBox(lat, lng) {
 // the `store` nested in past-registrations is stripped to id+name). Grows as we
 // confirm stores. Matching is by id (preferred) or name substring.
 export const KNOWN_SARDINIAN_STORE_IDS = new Set([1884 /* GamePeople Quartu */]);
+// Name allowlist is a LAST-RESORT for stripped shapes only (no region/geo).
+// Keep it specific: avoid chain names like "Ongame" that also operate on the
+// mainland (Roma Nord, Prato, Pomezia...) — those are disambiguated by region.
 const KNOWN_SARDINIAN_STORE_NAME =
-  /(dual dimension|nekopon|gamepeople|game people|red forge|ongame)/i;
+  /(dual dimension|nekopon|gamepeople|game people|red forge)/i;
 
-/** Is this STORE in Sardinia? Works on full (address) and stripped shapes.
- *  Country exclusion comes FIRST: an explicitly-foreign store (e.g. a Corsica/FR
- *  shop within radius) is never Sardinian, whatever its name. The name allowlist
- *  only helps stripped shapes where country/region are absent. */
+/** Is this STORE in Sardinia?
+ *  Order matters:
+ *   1. explicit foreign country  -> never Sardinian
+ *   2. region known (state / administrative_area) -> TRUST it exclusively
+ *      (so mainland IT stores like "Ongame Prato" in Toscana are excluded)
+ *   3. region unknown (stripped shapes, e.g. past-registrations) -> fall back
+ *      to curated id / name / coordinate bounding box. */
 export function isSardinianStore(store) {
   const s = store || {};
   if (s.country && s.country !== "IT") return false;
+  const region = s.state || s.administrative_area_level_1_short || "";
+  if (region) return SARD_REGION.test(region) || SARD_PROVINCES.test(region);
   if (KNOWN_SARDINIAN_STORE_IDS.has(s.id)) return true;
   if (KNOWN_SARDINIAN_STORE_NAME.test(s.name || "")) return true;
-  // region lives in `state` (v2 events) or `administrative_area_level_1_short` (feed)
-  const region = s.state || s.administrative_area_level_1_short || "";
-  if (SARD_REGION.test(region)) return true;
-  if (SARD_PROVINCES.test(region)) return true;
   if (typeof s.latitude === "number" && typeof s.longitude === "number") {
     return inSardiniaBBox(s.latitude, s.longitude);
   }

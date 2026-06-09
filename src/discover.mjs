@@ -19,9 +19,9 @@ import { writeFileSync, mkdirSync } from "node:fs";
 
 // Center + radius covering all of Sardinia (Cagliari + 200mi reaches Sassari,
 // Oristano, etc.). Overridable for reuse elsewhere.
-const LAT = Number(process.env.SARD_LAT || 39.2238);
-const LNG = Number(process.env.SARD_LNG || 9.1217);
-const MILES = Number(process.env.SARD_MILES || 200);
+const LAT = Number(process.env.SARD_LAT || 40.0);   // central Sardinia
+const LNG = Number(process.env.SARD_LNG || 9.0);
+const MILES = Number(process.env.SARD_MILES || 250); // covers the whole island; region filter excludes mainland
 
 const catalog = new Map();   // eventId -> row
 const storesGeo = new Map(); // storeId -> geo

@@ -10,7 +10,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 
-const URL = process.env.SUPABASE_URL;
+const URL = (process.env.SUPABASE_URL || "").replace(/\/(rest|storage|auth)\/v1\/?$/i, "").replace(/\/$/, "");
 const KEY = process.env.SUPABASE_SERVICE_KEY;
 const BUCKET = process.env.SUPABASE_STATE_BUCKET || "state";
 const FILES = ["riftbound.db", "nicknames-resolved.json", "publish-manifest.json"];

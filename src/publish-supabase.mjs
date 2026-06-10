@@ -13,7 +13,8 @@ import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 
-const URL = process.env.SUPABASE_URL;
+// Accept the project URL in any pasted form (with/without /rest/v1/ etc.)
+const URL = (process.env.SUPABASE_URL || "").replace(/\/(rest|storage|auth)\/v1\/?$/i, "").replace(/\/$/, "");
 const KEY = process.env.SUPABASE_SERVICE_KEY;
 const BUCKET = process.env.SUPABASE_BUCKET || "rankings";
 if (!URL || !KEY) { console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_KEY."); process.exit(1); }

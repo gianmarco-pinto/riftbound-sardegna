@@ -40,10 +40,10 @@ jobs:
       INGEST_COUNTRIES: IT
       DISCOVER_SCOPE: it
       MAX_EVENTS: ${{ github.event.inputs.max_events || '800' }}
-      MAX_STANDINGS: 800
+      MAX_STANDINGS: ${{ github.event.inputs.max_events || '800' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund

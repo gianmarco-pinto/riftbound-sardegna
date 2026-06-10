@@ -56,6 +56,13 @@ is resolved in `src/build-site.mjs` from three sources, in order:
 So `site/data.json` contains only nicknames or initials — no real names, no
 emails. (Data minimization → fewer GDPR obligations.)
 
+**Opt-out (GDPR):** to remove a player from the public site on request, add
+their stable id to `excluded.json` and let the nightly run republish (or run
+`build:site` + `publish:supabase` manually). They become "Anonimo" everywhere:
+no leaderboard rows, no profile page, anonymized in opponents' histories.
+Their matches stay in the rating math — removing them would corrupt other
+players' ratings.
+
 ## Architecture
 
 ```

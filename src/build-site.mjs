@@ -22,12 +22,21 @@ import { writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 let MANUAL = {}, RESOLVED = {};
 try { MANUAL = JSON.parse(readFileSync("nicknames.json", "utf8")); } catch {}
 try { RESOLVED = JSON.parse(readFileSync("data/nicknames-resolved.json", "utf8")); } catch {}
+
+// GDPR opt-out: player ids listed in excluded.json are anonymized everywhere
+// ("Anonimo", no profile shard, no leaderboard rows). Their matches stay in the
+// rating math (removing them would corrupt opponents' ratings) but nothing
+// identifying is published.
+let EXCLUDED = new Set();
+try { EXCLUDED = new Set(JSON.parse(readFileSync("excluded.json", "utf8")).map(String)); } catch {}
+
 function initials(name) {
   if (!name) return "Anonimo";
   if (/^User\d+$/i.test(name) || name === "Unknown") return "Anonimo";
   return name.trim().split(/\s+/).filter(Boolean).map((p) => p[0].toUpperCase() + ".").join(" ");
 }
-const handleOf = (realName, id) => MANUAL[String(id)] || RESOLVED[String(id)] || initials(realName);
+const handleOf = (realName, id) =>
+  EXCLUDED.has(String(id)) ? "Anonimo" : (MANUAL[String(id)] || RESOLVED[String(id)] || initials(realName));
 
 // --- tournament tiers ---
 const TIERS = { 1: "Pre-Rift", 2: "Nexus Night", 3: "Skirmish", 4: "Regional Qualifier", 5: "Regional" };
@@ -163,13 +172,19 @@ const players = ratingRows.map((p) => {
 players.sort((a, b) => b.rating - a.rating);
 const playerById = new Map(players.map((p) => [p.id, p]));
 
+// Opted-out players are kept in the rating math but never published.
+const publicPlayers = players.filter((p) => !EXCLUDED.has(String(p.id)));
+if (players.length !== publicPlayers.length) {
+  console.log(`GDPR opt-out: ${players.length - publicPlayers.length} player(s) anonymized & unlisted.`);
+}
+
 // --- per-scope leaderboard positions (embedded in player profiles) ---
-// ELO rank = position by rating among ALL players of the scope; Race rank =
-// position by 12-month points among scoring players of the scope.
-const allScopes = new Set(["global", ...players.flatMap((p) => p.scopes)]);
+// ELO rank = position by rating among ALL (public) players of the scope; Race
+// rank = position by 12-month points among scoring players of the scope.
+const allScopes = new Set(["global", ...publicPlayers.flatMap((p) => p.scopes)]);
 const positionsOf = new Map(); // pid -> [{scope, elo, of, race, raceOf}]
 for (const scope of allScopes) {
-  const inScope = scope === "global" ? players : players.filter((p) => p.scopes.includes(scope));
+  const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
   const byRace = inScope.filter((p) => p.race.points > 0)
     .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
   const raceRank = new Map(byRace.map((p, i) => [p.id, i + 1]));
@@ -187,7 +202,7 @@ mkdirSync("site", { recursive: true });
 
 // --- 1) legacy data.json (Sardegna-scoped, keeps live page working) ---
 {
-  const sardPlayers = players.filter((p) => p.scopes.includes("sardegna"));
+  const sardPlayers = publicPlayers.filter((p) => p.scopes.includes("sardegna"));
   const sardIds = new Set(sardPlayers.map((p) => p.id));
   const sardMatches = matchRows.filter((m) => sardIds.has(m.a) || sardIds.has(m.b));
   const sardEvents = {};
@@ -214,7 +229,7 @@ rmSync("site/leaderboards", { recursive: true, force: true });
 mkdirSync("site/leaderboards", { recursive: true });
 const scopeMeta = [];
 for (const scope of allScopes) {
-  const rows = (scope === "global" ? players : players.filter((p) => p.scopes.includes(scope))).map(lbRow);
+  const rows = (scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope))).map(lbRow);
   if (!rows.length) continue;
   writeFileSync(`site/leaderboards/${scope}.json`,
     JSON.stringify({ scope, generatedAt: new Date().toISOString(), players: rows }));
@@ -232,7 +247,7 @@ console.log(`leaderboards: ${scopeMeta.length} scopes (${countries.length} count
 // --- 3) per-player profile shards ---
 rmSync("site/players", { recursive: true, force: true });
 mkdirSync("site/players", { recursive: true });
-for (const p of players) {
+for (const p of publicPlayers) {
   const ms = (matchesByPlayer.get(p.id) || []).slice()
     .sort((x, y) => String(y.date).localeCompare(String(x.date)))
     .map((m) => {
@@ -247,4 +262,4 @@ for (const p of players) {
     .sort((a, b) => scopeWeight(a.scope) - scopeWeight(b.scope) || a.scope.localeCompare(b.scope));
   writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, positions, matches: ms }));
 }
-console.log(`players: ${players.length} profile shards`);
+console.log(`players: ${publicPlayers.length} profile shards`);

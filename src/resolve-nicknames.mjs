@@ -1,25 +1,29 @@
-// Resolve player nicknames (stable id -> nickname) for every event in the
-// catalog, into data/nicknames-resolved.json.
+// Resolve player nicknames (stable id -> nickname) AND final placements for
+// every event in the catalog, from the same v2 standings call.
 //
-// SOURCE: v2 round standings expose `user_event_status.best_identifier` — the
-// player's NICKNAME (display_name) — next to the stable `player.id`, in bulk,
-// for ALL participants of an event. We read the standings of each event's rounds
-// with our own token (no other accounts needed) and keep the nickname only when
-// the player actually set one (i.e. it differs from their real name and isn't
-// the "User<id>" placeholder). Real names are never stored or shown.
+// Outputs:
+//   data/nicknames-resolved.json  { playerId: nickname }
+//   data/placements.json          { eventId: { participants, places: { playerId: rank } } }
 //
-// Same mechanism works for any event worldwide.
+// SOURCE: v2 round standings expose, for ALL participants of an event:
+//   - user_event_status.best_identifier -> the player's NICKNAME (display_name)
+//   - player.id + rank                  -> final placement (we read the LAST
+//     round's standings, which are cumulative/final)
+// Readable for any event with our own token. Real names are never stored.
 //
 // Usage:  node --env-file=.env src/resolve-nicknames.mjs
 
 import { getEventRoundIds, getRoundStandingsV2 } from "./uvsgames.mjs";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
-const FILE = "data/nicknames-resolved.json";
+const NICK_FILE = "data/nicknames-resolved.json";
+const PLACE_FILE = "data/placements.json";
 
-let map = {};
-try { map = JSON.parse(readFileSync(FILE, "utf8")); } catch {}
-const before = Object.keys(map).length;
+let nicks = {};
+try { nicks = JSON.parse(readFileSync(NICK_FILE, "utf8")); } catch {}
+let placements = {};
+try { placements = JSON.parse(readFileSync(PLACE_FILE, "utf8")); } catch {}
+const nicksBefore = Object.keys(nicks).length;
 
 let events = [];
 try {
@@ -36,32 +40,39 @@ function isRealNickname(nick, realName) {
   return true;
 }
 
-let added = 0, scanned = 0;
-console.log(`Resolving nicknames across ${events.length} events...`);
+let nickAdded = 0, placedEvents = 0;
+console.log(`Resolving nicknames + placements across ${events.length} events...`);
 for (const eventId of events) {
   let roundIds;
   try { roundIds = await getEventRoundIds(eventId); } catch { continue; }
-  // last round's standings are cumulative (all players who finished); fall back
-  // to earlier rounds for anyone missing.
+  // Last round's standings are final (cover all players, including drops).
   for (const rid of roundIds.slice().reverse()) {
     let standings;
     try { standings = await getRoundStandingsV2(rid); } catch { continue; }
+    if (!standings.length) continue;
+    const places = {};
     for (const s of standings) {
       const id = s.player?.id;
+      if (id == null) continue;
       const real = s.player?.best_identifier;
       const nick = s.user_event_status?.best_identifier;
-      if (id == null) continue;
-      scanned++;
       if (isRealNickname(nick, real)) {
         const k = String(id);
-        if (!map[k]) added++;
-        map[k] = nick;
+        if (!nicks[k]) nickAdded++;
+        nicks[k] = nick;
       }
+      if (s.rank != null) places[String(id)] = s.rank;
     }
-    break; // last round is enough; remove this to union all rounds
+    if (Object.keys(places).length) {
+      placements[String(eventId)] = { participants: standings.length, places };
+      placedEvents++;
+    }
+    break; // last completed round is enough
   }
 }
 
 mkdirSync("data", { recursive: true });
-writeFileSync(FILE, JSON.stringify(map, null, 2));
-console.log(`Nicknames: ${before} -> ${Object.keys(map).length} (+${added} new). Saved ${FILE}.`);
+writeFileSync(NICK_FILE, JSON.stringify(nicks, null, 2));
+writeFileSync(PLACE_FILE, JSON.stringify(placements, null, 2));
+console.log(`Nicknames: ${nicksBefore} -> ${Object.keys(nicks).length} (+${nickAdded} new).`);
+console.log(`Placements: ${placedEvents} events this run, ${Object.keys(placements).length} total. Saved ${NICK_FILE} + ${PLACE_FILE}.`);

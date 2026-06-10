@@ -26,12 +26,58 @@ function initials(name) {
 }
 const handleOf = (realName, id) => MANUAL[String(id)] || RESOLVED[String(id)] || initials(realName);
 
+// --- tournament tier classification (by event name) ---
+// Hierarchy (least -> most important): 1 Pre-Rift, 2 Nexus Night, 3 Skirmish,
+// 4 Regional Qualifier, 5 Regional. Rules agreed with the league:
+//  - any "Release" event counts as Pre-Rift
+//  - anything containing "Nexus" is a Nexus Night, whatever follows
+// Checks go from most to least prestigious so combined names resolve upward.
+const TIERS = { 1: "Pre-Rift", 2: "Nexus Night", 3: "Skirmish", 4: "Regional Qualifier", 5: "Regional" };
+function classifyTier(name) {
+  const n = name || "";
+  if (/qualifier/i.test(n)) return 4;
+  if (/regional/i.test(n)) return 5;
+  if (/skirmish/i.test(n)) return 3;
+  if (/nexus/i.test(n)) return 2;
+  if (/pre.?rift|release/i.test(n)) return 1;
+  return null; // unclassified: counts for rating, not for palmares
+}
+
+// --- final placements (from v2 standings, see resolve-nicknames.mjs) ---
+let PLACEMENTS = {};
+try { PLACEMENTS = JSON.parse(readFileSync("data/placements.json", "utf8")); } catch {}
+
 // --- events (with store + geo) ---
 const eventsRows = db.prepare(`
   SELECT e.id, e.name, e.date, e.region, e.city, e.country, s.name AS store
   FROM events e LEFT JOIN stores s ON s.id = e.store_id`).all();
 const events = {};
-for (const e of eventsRows) events[e.id] = e;
+for (const e of eventsRows) {
+  const tier = classifyTier(e.name);
+  events[e.id] = { ...e, tier, tierLabel: tier ? TIERS[tier] : null };
+}
+
+// playerId -> { tier -> {first, second, third} }
+const palmaresOf = new Map();
+const unclassified = new Set();
+for (const [eid, info] of Object.entries(PLACEMENTS)) {
+  const ev = events[eid];
+  if (!ev) continue;
+  if (!ev.tier) { if (ev.name) unclassified.add(ev.name); continue; }
+  for (const [pid, rank] of Object.entries(info.places || {})) {
+    if (rank > 3) continue;
+    let byTier = palmaresOf.get(pid);
+    if (!byTier) { byTier = new Map(); palmaresOf.set(pid, byTier); }
+    let t = byTier.get(ev.tier);
+    if (!t) { t = { first: 0, second: 0, third: 0 }; byTier.set(ev.tier, t); }
+    if (rank === 1) t.first++;
+    else if (rank === 2) t.second++;
+    else t.third++;
+  }
+}
+if (unclassified.size) {
+  console.warn(`Unclassified event names (no tier, excluded from palmares): ${[...unclassified].slice(0, 8).join(" | ")}`);
+}
 
 // --- snapshots: opponent-rating-at-event lookup + per-player series ---
 const snaps = db.prepare(`SELECT player_id, event_id, date, rating, rd FROM rating_snapshots`).all();
@@ -99,6 +145,10 @@ const players = ratingRows.map((p) => {
     regions: [...(playerRegions.get(p.id) || [])],
     series: seriesOf.get(p.id) || [],
     bestWin, worstLoss,
+    // podiums per tier, most prestigious first: [{tier, label, first, second, third}]
+    palmares: [...(palmaresOf.get(String(p.id)) || new Map())]
+      .sort((a, b) => b[0] - a[0])
+      .map(([tier, c]) => ({ tier, label: TIERS[tier], ...c })),
   };
 });
 

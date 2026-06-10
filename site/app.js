@@ -170,6 +170,7 @@ function renderPlayer(id, oppId = null) {
       <span class="pbig">${p.rating}</span><span class="rd">±${p.rd}${p.provisional ? '<span class="badge">provvisorio</span>' : ""}</span>
     </div>
     <div class="muted">Record ${p.wins}-${p.losses}-${p.draws}${p.games ? ` · <span class="w">${Math.round(100 * p.wins / p.games)}% V</span> / <span class="l">${Math.round(100 * p.losses / p.games)}% S</span> / <span class="d">${Math.round(100 * p.draws / p.games)}% P</span>` : ""} · ${p.games} partite · aree: ${p.regions.map(esc).join(", ") || "—"}</div>
+    ${(p.palmares || []).length ? `<div class="card" style="margin-top:12px"><h3>Palmares</h3><ul class="reslist">${p.palmares.map((t) => `<li><span>${esc(t.label)}</span><span>${t.first ? `🥇 ×${t.first} ` : ""}${t.second ? `🥈 ×${t.second} ` : ""}${t.third ? `🥉 ×${t.third}` : ""}</span></li>`).join("")}</ul></div>` : ""}
     ${ratingChart(p.series)}
     <div class="grid">
       ${recCard("Miglior vittoria", bw, "w")}

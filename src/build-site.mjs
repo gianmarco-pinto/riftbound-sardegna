@@ -79,6 +79,32 @@ if (unclassified.size) {
   console.warn(`Unclassified event names (no tier, excluded from palmares): ${[...unclassified].slice(0, 8).join(" | ")}`);
 }
 
+// --- "Race" points (ATP-style rolling 12 months) ---
+// points = placement points × tier multiplier; participation always scores.
+//   placement: 1st=10, 2nd=6, 3rd=4, anyone else=1 (participation)
+//   tier mult: Pre-Rift ×1, Nexus ×2, Skirmish ×3, Qualifier ×5, Regional ×8
+// The window slides at every rebuild: events older than 365 days drop out.
+const TIER_MULT = { 1: 1, 2: 2, 3: 3, 4: 5, 5: 8 };
+const placePts = (rank) => (rank === 1 ? 10 : rank === 2 ? 6 : rank === 3 ? 4 : 1);
+const raceCutoff = Date.now() - 365 * 24 * 3600 * 1000;
+const raceOf = new Map(); // pid -> {points, events, first, second, third}
+for (const [eid, info] of Object.entries(PLACEMENTS)) {
+  const ev = events[eid];
+  if (!ev?.tier || !ev.date) continue;
+  const ts = Date.parse(ev.date);
+  if (!(ts >= raceCutoff)) continue;
+  const mult = TIER_MULT[ev.tier];
+  for (const [pid, rank] of Object.entries(info.places || {})) {
+    let r = raceOf.get(pid);
+    if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0 }; raceOf.set(pid, r); }
+    r.points += placePts(rank) * mult;
+    r.events++;
+    if (rank === 1) r.first++;
+    else if (rank === 2) r.second++;
+    else if (rank === 3) r.third++;
+  }
+}
+
 // --- snapshots: opponent-rating-at-event lookup + per-player series ---
 const snaps = db.prepare(`SELECT player_id, event_id, date, rating, rd FROM rating_snapshots`).all();
 const snapAt = new Map();              // `${pid}:${eid}` -> rating
@@ -149,6 +175,8 @@ const players = ratingRows.map((p) => {
     palmares: [...(palmaresOf.get(String(p.id)) || new Map())]
       .sort((a, b) => b[0] - a[0])
       .map(([tier, c]) => ({ tier, label: TIERS[tier], ...c })),
+    // ATP-style rolling-12-month points (see Race block above)
+    race: raceOf.get(String(p.id)) || { points: 0, events: 0, first: 0, second: 0, third: 0 },
   };
 });
 

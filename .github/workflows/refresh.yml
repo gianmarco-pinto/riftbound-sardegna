@@ -1,0 +1,64 @@
+# Scheduled rankings refresh: discover -> ingest (capped) -> standings ->
+# rate -> build shards -> publish to Supabase. State (SQLite DB) persists
+# between runs in a private Supabase bucket.
+#
+# Required repo secrets:
+#   UVS_TOKEN             auth token for api.riftbound.uvsgames.com
+#   SUPABASE_URL          https://<project>.supabase.co
+#   SUPABASE_SERVICE_KEY  service_role key (write access)
+#
+# Buckets (create once in Supabase): "rankings" (public), "state" (private).
+
+name: refresh-rankings
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # daily 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_events:
+        description: "Max events to ingest this run"
+        default: "800"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-rankings
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UVS_TOKEN: ${{ secrets.UVS_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      INGEST_COUNTRIES: IT
+      DISCOVER_SCOPE: it
+      MAX_EVENTS: ${{ github.event.inputs.max_events || '800' }}
+      MAX_STANDINGS: 800
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Download state
+        run: node src/state.mjs download
+      - name: Discover events
+        run: node src/discover.mjs
+      - name: Ingest results (capped)
+        run: node src/ingest.mjs
+      - name: Standings (nicknames + placements)
+        run: node src/resolve-nicknames.mjs
+      - name: Compute ratings
+        run: node src/rate.mjs
+      - name: Build site shards
+        run: node src/build-site.mjs
+      - name: Publish to Supabase
+        run: node src/publish-supabase.mjs
+      - name: Upload state
+        if: always()
+        run: node src/state.mjs upload

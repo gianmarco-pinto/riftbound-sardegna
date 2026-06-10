@@ -1,24 +1,27 @@
-// Generate the static site's data file (site/data.json) from SQLite.
-// The HTML/JS in site/ are static and version-controlled; only data.json is
-// regenerated on each ingest. Deploy the whole site/ folder to Vercel/Netlify.
+// Generate the website data from SQLite — SHARDED for worldwide scale:
 //
-// Privacy: only handles are emitted (no email/real name — those never entered
-// the DB in the first place).
+//   site/data.json                  legacy single-file dataset, SARDEGNA-scoped
+//                                   (keeps the currently-deployed page working)
+//   site/leaderboards/index.json    available scopes (countries/continents)
+//   site/leaderboards/<scope>.json  light ranking rows per scope:
+//                                   global, sardegna, country (it, fr...),
+//                                   continent (eu, am, as, oc, af)
+//   site/players/<id>.json          full profile per player (series, palmares,
+//                                   race, matches) — loaded on click
+//
+// A player belongs to a scope if they played >=1 match there. Ratings are
+// GLOBAL (one per player); scopes are views. Only nicknames/initials emitted.
 //
 // Usage:  node src/build-site.mjs
 
-import { db } from "./db.mjs";
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { db, allPlacements } from "./db.mjs";
+import { CONTINENT_LABELS } from "./scopes.mjs";
+import { writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 
-// Nickname sources (id -> nickname), no real names published:
-//  1. nicknames.json            — manual / opt-in overrides (committed)
-//  2. data/nicknames-resolved.json — auto-resolved from account histories
-//     (see resolve-nicknames.mjs; the global, accumulating source)
-//  3. fallback: initials of the real name (never the full name)
+// --- display identity (nickname || initials; never real names) ---
 let MANUAL = {}, RESOLVED = {};
 try { MANUAL = JSON.parse(readFileSync("nicknames.json", "utf8")); } catch {}
 try { RESOLVED = JSON.parse(readFileSync("data/nicknames-resolved.json", "utf8")); } catch {}
-
 function initials(name) {
   if (!name) return "Anonimo";
   if (/^User\d+$/i.test(name) || name === "Unknown") return "Anonimo";
@@ -26,12 +29,7 @@ function initials(name) {
 }
 const handleOf = (realName, id) => MANUAL[String(id)] || RESOLVED[String(id)] || initials(realName);
 
-// --- tournament tier classification (by event name) ---
-// Hierarchy (least -> most important): 1 Pre-Rift, 2 Nexus Night, 3 Skirmish,
-// 4 Regional Qualifier, 5 Regional. Rules agreed with the league:
-//  - any "Release" event counts as Pre-Rift
-//  - anything containing "Nexus" is a Nexus Night, whatever follows
-// Checks go from most to least prestigious so combined names resolve upward.
+// --- tournament tiers ---
 const TIERS = { 1: "Pre-Rift", 2: "Nexus Night", 3: "Skirmish", 4: "Regional Qualifier", 5: "Regional" };
 function classifyTier(name) {
   const n = name || "";
@@ -40,16 +38,12 @@ function classifyTier(name) {
   if (/skirmish/i.test(n)) return 3;
   if (/nexus/i.test(n)) return 2;
   if (/pre.?rift|release/i.test(n)) return 1;
-  return null; // unclassified: counts for rating, not for palmares
+  return null;
 }
 
-// --- final placements (from v2 standings, see resolve-nicknames.mjs) ---
-let PLACEMENTS = {};
-try { PLACEMENTS = JSON.parse(readFileSync("data/placements.json", "utf8")); } catch {}
-
-// --- events (with store + geo) ---
+// --- load core data ---
 const eventsRows = db.prepare(`
-  SELECT e.id, e.name, e.date, e.region, e.city, e.country, s.name AS store
+  SELECT e.id, e.name, e.date, e.region, e.city, e.country, e.continent, s.name AS store
   FROM events e LEFT JOIN stores s ON s.id = e.store_id`).all();
 const events = {};
 for (const e of eventsRows) {
@@ -57,58 +51,15 @@ for (const e of eventsRows) {
   events[e.id] = { ...e, tier, tierLabel: tier ? TIERS[tier] : null };
 }
 
-// playerId -> { tier -> {first, second, third} }
-const palmaresOf = new Map();
-const unclassified = new Set();
-for (const [eid, info] of Object.entries(PLACEMENTS)) {
-  const ev = events[eid];
-  if (!ev) continue;
-  if (!ev.tier) { if (ev.name) unclassified.add(ev.name); continue; }
-  for (const [pid, rank] of Object.entries(info.places || {})) {
-    if (rank > 3) continue;
-    let byTier = palmaresOf.get(pid);
-    if (!byTier) { byTier = new Map(); palmaresOf.set(pid, byTier); }
-    let t = byTier.get(ev.tier);
-    if (!t) { t = { first: 0, second: 0, third: 0 }; byTier.set(ev.tier, t); }
-    if (rank === 1) t.first++;
-    else if (rank === 2) t.second++;
-    else t.third++;
-  }
-}
-if (unclassified.size) {
-  console.warn(`Unclassified event names (no tier, excluded from palmares): ${[...unclassified].slice(0, 8).join(" | ")}`);
-}
+const matchRows = db.prepare(`
+  SELECT id, event_id AS eventId, date, player_a AS a, player_b AS b, winner
+  FROM matches
+  WHERE is_bye = 0 AND winner IS NOT NULL AND player_a IS NOT NULL AND player_b IS NOT NULL
+  ORDER BY date ASC`).all();
 
-// --- "Race" points (ATP-style rolling 12 months) ---
-// points = placement points × tier multiplier; participation always scores.
-//   placement: 1st=10, 2nd=6, 3rd=4, anyone else=1 (participation)
-//   tier mult: Pre-Rift ×1, Nexus ×2, Skirmish ×3, Qualifier ×5, Regional ×8
-// The window slides at every rebuild: events older than 365 days drop out.
-const TIER_MULT = { 1: 1, 2: 2, 3: 3, 4: 5, 5: 8 };
-const placePts = (rank) => (rank === 1 ? 10 : rank === 2 ? 6 : rank === 3 ? 4 : 1);
-const raceCutoff = Date.now() - 365 * 24 * 3600 * 1000;
-const raceOf = new Map(); // pid -> {points, events, first, second, third}
-for (const [eid, info] of Object.entries(PLACEMENTS)) {
-  const ev = events[eid];
-  if (!ev?.tier || !ev.date) continue;
-  const ts = Date.parse(ev.date);
-  if (!(ts >= raceCutoff)) continue;
-  const mult = TIER_MULT[ev.tier];
-  for (const [pid, rank] of Object.entries(info.places || {})) {
-    let r = raceOf.get(pid);
-    if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0 }; raceOf.set(pid, r); }
-    r.points += placePts(rank) * mult;
-    r.events++;
-    if (rank === 1) r.first++;
-    else if (rank === 2) r.second++;
-    else if (rank === 3) r.third++;
-  }
-}
-
-// --- snapshots: opponent-rating-at-event lookup + per-player series ---
 const snaps = db.prepare(`SELECT player_id, event_id, date, rating, rd FROM rating_snapshots`).all();
-const snapAt = new Map();              // `${pid}:${eid}` -> rating
-const seriesOf = new Map();            // pid -> [{date, rating, rd, eventId, eventName}]
+const snapAt = new Map();
+const seriesOf = new Map();
 for (const s of snaps) {
   snapAt.set(`${s.player_id}:${s.event_id}`, s.rating);
   if (!seriesOf.has(s.player_id)) seriesOf.set(s.player_id, []);
@@ -119,46 +70,77 @@ for (const s of snaps) {
 }
 for (const arr of seriesOf.values()) arr.sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
-// --- matches (decided, non-bye) ---
-const matchRows = db.prepare(`
-  SELECT id, event_id AS eventId, date, player_a AS a, player_b AS b, winner
-  FROM matches
-  WHERE is_bye = 0 AND winner IS NOT NULL AND player_a IS NOT NULL AND player_b IS NOT NULL
-  ORDER BY date ASC`).all();
-
-// --- players + ratings ---
 const ratingRows = db.prepare(`
   SELECT r.player_id AS id, p.handle, r.rating, r.rd, r.vol,
          r.games, r.wins, r.losses, r.draws, r.provisional, r.last_date AS lastDate
   FROM ratings r JOIN players p ON p.id = r.player_id`).all();
-
 const ratingMap = new Map(ratingRows.map((r) => [r.id, r]));
 
-// regions each player has played in
-const playerRegions = new Map();
-const addRegion = (pid, reg) => {
-  if (!reg) return;
-  if (!playerRegions.has(pid)) playerRegions.set(pid, new Set());
-  playerRegions.get(pid).add(reg);
-};
-for (const m of matchRows) {
-  const reg = events[m.eventId]?.region;
-  addRegion(m.a, reg); addRegion(m.b, reg);
+// --- placements -> palmares + race ---
+const PLACEMENTS = {};
+for (const p of allPlacements()) {
+  (PLACEMENTS[p.eventId] ||= { participants: p.participants, places: {} }).places[p.playerId] = p.rank;
+}
+const palmaresOf = new Map();
+const TIER_MULT = { 1: 1, 2: 2, 3: 3, 4: 5, 5: 8 };
+const placePts = (rank) => (rank === 1 ? 10 : rank === 2 ? 6 : rank === 3 ? 4 : 1);
+const raceCutoff = Date.now() - 365 * 24 * 3600e3;
+const raceOf = new Map();
+for (const [eid, info] of Object.entries(PLACEMENTS)) {
+  const ev = events[eid];
+  if (!ev?.tier) continue;
+  const inRace = ev.date && Date.parse(ev.date) >= raceCutoff;
+  for (const [pid, rank] of Object.entries(info.places)) {
+    if (rank <= 3) {
+      let byTier = palmaresOf.get(pid);
+      if (!byTier) { byTier = new Map(); palmaresOf.set(pid, byTier); }
+      let t = byTier.get(ev.tier);
+      if (!t) { t = { first: 0, second: 0, third: 0 }; byTier.set(ev.tier, t); }
+      if (rank === 1) t.first++; else if (rank === 2) t.second++; else t.third++;
+    }
+    if (inRace) {
+      let r = raceOf.get(pid);
+      if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0 }; raceOf.set(pid, r); }
+      r.points += placePts(rank) * TIER_MULT[ev.tier];
+      r.events++;
+      if (rank === 1) r.first++; else if (rank === 2) r.second++; else if (rank === 3) r.third++;
+    }
+  }
 }
 
+// --- per-player scopes + matches ---
+const matchesByPlayer = new Map();
+const scopesOf = new Map(); // pid -> Set of scope keys
+const addScope = (pid, key) => {
+  if (!key) return;
+  let s = scopesOf.get(pid);
+  if (!s) { s = new Set(); scopesOf.set(pid, s); }
+  s.add(key);
+};
+for (const m of matchRows) {
+  const ev = events[m.eventId] || {};
+  for (const pid of [m.a, m.b]) {
+    let arr = matchesByPlayer.get(pid);
+    if (!arr) { arr = []; matchesByPlayer.set(pid, arr); }
+    arr.push(m);
+    if (ev.region === "Sardegna") addScope(pid, "sardegna");
+    if (ev.country) addScope(pid, ev.country.toLowerCase());
+    if (ev.continent) addScope(pid, ev.continent.toLowerCase());
+  }
+}
+
+// --- build full player objects ---
 const players = ratingRows.map((p) => {
-  // best win / worst loss measured by opponent's rating AT that event
   let bestWin = null, worstLoss = null;
-  for (const m of matchRows) {
-    if (m.a !== p.id && m.b !== p.id) continue;
+  for (const m of matchesByPlayer.get(p.id) || []) {
     const meA = m.a === p.id;
     const oppId = meA ? m.b : m.a;
     const won = (m.winner === "A" && meA) || (m.winner === "B" && !meA);
     const lost = (m.winner === "A" && !meA) || (m.winner === "B" && meA);
     const oppRating = snapAt.get(`${oppId}:${m.eventId}`);
     if (oppRating == null) continue;
-    const oppHandle = handleOf(ratingMap.get(oppId)?.handle, oppId);
-    const rec = { oppId, oppHandle, oppRating, eventName: events[m.eventId]?.name || "", date: m.date };
+    const rec = { oppId, oppHandle: handleOf(ratingMap.get(oppId)?.handle, oppId), oppRating,
+      eventName: events[m.eventId]?.name || "", date: m.date };
     if (won && (!bestWin || oppRating > bestWin.oppRating)) bestWin = rec;
     if (lost && (!worstLoss || oppRating < worstLoss.oppRating)) worstLoss = rec;
   }
@@ -168,31 +150,80 @@ const players = ratingRows.map((p) => {
     rating: p.rating, rd: p.rd, vol: p.vol,
     games: p.games, wins: p.wins, losses: p.losses, draws: p.draws,
     provisional: !!p.provisional, lastDate: p.lastDate,
-    regions: [...(playerRegions.get(p.id) || [])],
+    regions: [...(scopesOf.get(p.id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
+    scopes: [...(scopesOf.get(p.id) || [])],
     series: seriesOf.get(p.id) || [],
     bestWin, worstLoss,
-    // podiums per tier, most prestigious first: [{tier, label, first, second, third}]
     palmares: [...(palmaresOf.get(String(p.id)) || new Map())]
       .sort((a, b) => b[0] - a[0])
       .map(([tier, c]) => ({ tier, label: TIERS[tier], ...c })),
-    // ATP-style rolling-12-month points (see Race block above)
     race: raceOf.get(String(p.id)) || { points: 0, events: 0, first: 0, second: 0, third: 0 },
   };
 });
-
 players.sort((a, b) => b.rating - a.rating);
-
-const regions = [...new Set(eventsRows.map((e) => e.region).filter(Boolean))].sort();
-
-const out = {
-  generatedAt: new Date().toISOString(),
-  counts: { players: players.length, matches: matchRows.length, events: eventsRows.length },
-  regions,
-  events,
-  players,
-  matches: matchRows, // compact: {id,eventId,date,a,b,winner} — client derives H2H
-};
+const playerById = new Map(players.map((p) => [p.id, p]));
 
 mkdirSync("site", { recursive: true });
-writeFileSync("site/data.json", JSON.stringify(out));
-console.log(`Wrote site/data.json — ${players.length} players, ${matchRows.length} matches, ${regions.length} regions.`);
+
+// --- 1) legacy data.json (Sardegna-scoped, keeps live page working) ---
+{
+  const sardPlayers = players.filter((p) => p.scopes.includes("sardegna"));
+  const sardIds = new Set(sardPlayers.map((p) => p.id));
+  const sardMatches = matchRows.filter((m) => sardIds.has(m.a) || sardIds.has(m.b));
+  const sardEvents = {};
+  for (const m of sardMatches) if (events[m.eventId]) sardEvents[m.eventId] = events[m.eventId];
+  for (const e of eventsRows) if (e.region === "Sardegna") sardEvents[e.id] = events[e.id];
+  const legacy = {
+    generatedAt: new Date().toISOString(),
+    counts: { players: sardPlayers.length, matches: sardMatches.length,
+      events: eventsRows.filter((e) => e.region === "Sardegna").length },
+    regions: ["Sardegna"],
+    events: sardEvents, players: sardPlayers, matches: sardMatches,
+  };
+  writeFileSync("site/data.json", JSON.stringify(legacy));
+  console.log(`data.json (legacy, Sardegna): ${sardPlayers.length} players, ${sardMatches.length} matches`);
+}
+
+// --- 2) leaderboard shards per scope ---
+const lbRow = (p) => ({
+  id: p.id, handle: p.handle, rating: p.rating, rd: p.rd,
+  games: p.games, wins: p.wins, losses: p.losses, draws: p.draws,
+  provisional: p.provisional, race: p.race,
+});
+const allScopes = new Set(["global", ...players.flatMap((p) => p.scopes)]);
+rmSync("site/leaderboards", { recursive: true, force: true });
+mkdirSync("site/leaderboards", { recursive: true });
+const scopeMeta = [];
+for (const scope of allScopes) {
+  const rows = (scope === "global" ? players : players.filter((p) => p.scopes.includes(scope))).map(lbRow);
+  if (!rows.length) continue;
+  writeFileSync(`site/leaderboards/${scope}.json`,
+    JSON.stringify({ scope, generatedAt: new Date().toISOString(), players: rows }));
+  scopeMeta.push({ scope, players: rows.length });
+}
+const countries = scopeMeta.filter((s) => /^[a-z]{2}$/.test(s.scope) && !CONTINENT_LABELS[s.scope.toUpperCase()]);
+const continents = scopeMeta.filter((s) => CONTINENT_LABELS[s.scope.toUpperCase()]);
+writeFileSync("site/leaderboards/index.json", JSON.stringify({
+  generatedAt: new Date().toISOString(),
+  special: scopeMeta.filter((s) => s.scope === "sardegna" || s.scope === "global"),
+  continents, countries,
+}));
+console.log(`leaderboards: ${scopeMeta.length} scopes (${countries.length} countries, ${continents.length} continents)`);
+
+// --- 3) per-player profile shards ---
+rmSync("site/players", { recursive: true, force: true });
+mkdirSync("site/players", { recursive: true });
+for (const p of players) {
+  const ms = (matchesByPlayer.get(p.id) || []).slice()
+    .sort((x, y) => String(y.date).localeCompare(String(x.date)))
+    .map((m) => {
+      const meA = m.a === p.id;
+      const oppId = meA ? m.b : m.a;
+      const result = m.winner === "draw" ? "D"
+        : ((m.winner === "A" && meA) || (m.winner === "B" && !meA)) ? "W" : "L";
+      return { id: m.id, oppId, oppHandle: playerById.get(oppId)?.handle || "?",
+        result, date: m.date, eventId: m.eventId, eventName: events[m.eventId]?.name || "" };
+    });
+  writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, matches: ms }));
+}
+console.log(`players: ${players.length} profile shards`);

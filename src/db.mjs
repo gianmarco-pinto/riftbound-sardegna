@@ -79,7 +79,21 @@ CREATE TABLE IF NOT EXISTS rating_snapshots (
   rating    REAL, rd REAL, vol REAL,
   PRIMARY KEY (player_id, event_id)
 );
+
+CREATE TABLE IF NOT EXISTS placements (
+  event_id     INTEGER,
+  player_id    TEXT,
+  rank         INTEGER,
+  participants INTEGER,
+  PRIMARY KEY (event_id, player_id)
+);
 `);
+
+// migration-lite: columns added after first release (no-op if present)
+for (const sql of [
+  "ALTER TABLE events ADD COLUMN continent TEXT",
+  "ALTER TABLE events ADD COLUMN ingested_at TEXT",
+]) { try { db.exec(sql); } catch { /* already there */ } }
 
 // --- prepared upserts ---
 const _store = db.prepare(`
@@ -92,15 +106,44 @@ export const upsertStore = (s) =>
   _store.run(s.id, s.name ?? null, s.country ?? null, s.region ?? null, s.city ?? null, s.lat ?? null, s.lng ?? null);
 
 const _event = db.prepare(`
-  INSERT INTO events (id,name,store_id,date,game,country,region,city,lat,lng)
-  VALUES (?,?,?,?,?,?,?,?,?,?)
+  INSERT INTO events (id,name,store_id,date,game,country,region,city,lat,lng,continent)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(id) DO UPDATE SET
     name=excluded.name, store_id=excluded.store_id, date=excluded.date, game=excluded.game,
     country=excluded.country, region=excluded.region, city=excluded.city,
-    lat=excluded.lat, lng=excluded.lng`);
+    lat=excluded.lat, lng=excluded.lng, continent=excluded.continent`);
 export const upsertEvent = (e) =>
   _event.run(e.id, e.name ?? null, e.store_id ?? null, e.date ?? null, e.game ?? null,
-    e.country ?? null, e.region ?? null, e.city ?? null, e.lat ?? null, e.lng ?? null);
+    e.country ?? null, e.region ?? null, e.city ?? null, e.lat ?? null, e.lng ?? null,
+    e.continent ?? null);
+
+// --- incremental ingestion state ---
+export const markIngested = (id) =>
+  db.prepare("UPDATE events SET ingested_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+
+/** Past events in enabled countries not yet ingested, oldest first. */
+export const pendingEvents = (countries, limit) => db.prepare(`
+  SELECT id, name, date, country, region FROM events
+  WHERE ingested_at IS NULL AND date < ?
+    AND country IN (${countries.map(() => "?").join(",")})
+  ORDER BY date ASC LIMIT ?`).all(new Date().toISOString(), ...countries, limit);
+
+// --- placements ---
+const _placement = db.prepare(`
+  INSERT INTO placements (event_id,player_id,rank,participants) VALUES (?,?,?,?)
+  ON CONFLICT(event_id,player_id) DO UPDATE SET rank=excluded.rank, participants=excluded.participants`);
+export const upsertPlacement = (eventId, playerId, rank, participants) =>
+  _placement.run(eventId, playerId, rank, participants);
+
+/** Ingested events that have matches but no placements yet (for standings fetch). */
+export const eventsNeedingPlacements = (limit) => db.prepare(`
+  SELECT DISTINCT e.id FROM events e
+  JOIN matches m ON m.event_id = e.id
+  WHERE NOT EXISTS (SELECT 1 FROM placements pl WHERE pl.event_id = e.id)
+  ORDER BY e.date ASC LIMIT ?`).all(limit);
+
+export const allPlacements = () => db.prepare(
+  "SELECT event_id AS eventId, player_id AS playerId, rank, participants FROM placements").all();
 
 const _player = db.prepare(`
   INSERT INTO players (id,handle,first_seen,last_seen)

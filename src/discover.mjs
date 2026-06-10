@@ -1,97 +1,85 @@
-// Build the catalog of ALL Riftbound events in Sardinia (not just yours).
+// Discover Riftbound events for the enabled scope and store their metadata in
+// SQLite (no match data yet — that's ingest.mjs, which is incremental).
 //
-// Primary source: /api/v2/events/ geographic search — the one endpoint that
-// honours filters (lat/lng/radius + game_slug + date range). One query centered
-// on Sardinia with a radius covering the whole island returns every event at
-// every Sardinian store, past and future. (This same primitive scales
-// worldwide: change the center/radius, or tile multiple centers.)
+// Sweeps the geo circles of DISCOVER_SCOPE (default "it"; "eu" for phase 2)
+// via /api/v2/events/ (honours lat/lng/num_miles + game_slug + dates), dedupes
+// across circles, and upserts events + stores with country/region/continent.
+// Metadata for ALL countries found in the circles is kept (free progress
+// toward wider scopes); ingestion gating happens later by INGEST_COUNTRIES.
 //
-// We over-fetch with a generous radius (catches Corsica/France too) and then
-// filter precisely to Sardinian stores by country+region.
-//
-// Output: data/sardinian-events.json + data/stores.json
-// Usage:  node --env-file=.env src/discover.mjs        (token required)
+// Usage:  node --env-file=.env src/discover.mjs          (token required)
+//   env: DISCOVER_SCOPE=it|eu   DISCOVER_AFTER=2025-10-01
 
-import {
-  searchEventsGeo, getMyPastRegistrations, isSardinianStore, normalizeRegion,
-} from "./uvsgames.mjs";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { searchEventsGeo, normalizeRegion } from "./uvsgames.mjs";
+import { CIRCLES, continentOf } from "./scopes.mjs";
+import { upsertStore, upsertEvent, transaction, db } from "./db.mjs";
 
-// Center + radius covering all of Sardinia (Cagliari + 200mi reaches Sassari,
-// Oristano, etc.). Overridable for reuse elsewhere.
-const LAT = Number(process.env.SARD_LAT || 40.0);   // central Sardinia
-const LNG = Number(process.env.SARD_LNG || 9.0);
-const MILES = Number(process.env.SARD_MILES || 250); // covers the whole island; region filter excludes mainland
+const SCOPE = (process.env.DISCOVER_SCOPE || "it").toLowerCase();
+const AFTER = process.env.DISCOVER_AFTER || "2025-10-01T00:00:00Z"; // Riftbound launch
+const BEFORE = new Date(Date.now() + 60 * 24 * 3600e3).toISOString(); // +60d of upcoming
 
-const catalog = new Map();   // eventId -> row
-const storesGeo = new Map(); // storeId -> geo
+const circles = CIRCLES[SCOPE];
+if (!circles) { console.error(`Unknown DISCOVER_SCOPE "${SCOPE}" (have: ${Object.keys(CIRCLES).join(", ")})`); process.exit(1); }
+if (!process.env.UVS_TOKEN) { console.error("UVS_TOKEN required."); process.exit(1); }
 
-function recordStore(s) {
-  if (!s || s.id == null) return;
-  storesGeo.set(s.id, {
-    id: s.id, name: s.name ?? null, country: s.country ?? null,
-    region: normalizeRegion(s.country, s.state ?? s.administrative_area_level_1_short ?? null),
-    city: s.city ?? null,
-    lat: typeof s.latitude === "number" ? s.latitude : null,
-    lng: typeof s.longitude === "number" ? s.longitude : null,
-  });
+// Sweep per month-window per circle: keeps each query well under the
+// pagination cap (dense EU circles can hold thousands of events per month).
+function monthWindows(afterISO, beforeISO) {
+  const out = [];
+  let t = new Date(afterISO);
+  const end = new Date(beforeISO);
+  while (t < end) {
+    const next = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 1));
+    out.push([t.toISOString(), (next < end ? next : end).toISOString()]);
+    t = next;
+  }
+  return out;
 }
-function add(e, source) {
-  if (e?.id == null) return;
-  const key = String(e.id);
-  if (!catalog.has(key)) {
-    catalog.set(key, {
-      eventId: e.id,
-      name: e.name_pretty || e.name || "",
-      store: e.store?.name || "",
-      date: e.start_datetime || null,
-      sources: new Set(),
+
+const windows = monthWindows(AFTER, BEFORE);
+const seen = new Map(); // eventId -> raw event
+for (const [i, c] of circles.entries()) {
+  let circleTotal = 0, circleFresh = 0;
+  for (const [from, to] of windows) {
+    const events = await searchEventsGeo({
+      lat: c.lat, lng: c.lng, miles: c.miles, after: from, before: to, pageSize: 100, maxPages: 60,
     });
+    if (events.length >= 100 * 60) console.warn(`  ! window ${from.slice(0, 7)} circle ${i + 1} hit page cap — possible truncation`);
+    circleTotal += events.length;
+    for (const e of events) if (!seen.has(e.id)) { seen.set(e.id, e); circleFresh++; }
   }
-  catalog.get(key).sources.add(source);
+  console.log(`  circle ${i + 1}/${circles.length} (${c.lat},${c.lng} r${c.miles}mi): ${circleTotal} events across ${windows.length} months, ${circleFresh} new`);
 }
 
-if (!process.env.UVS_TOKEN) {
-  console.error("UVS_TOKEN required (the v2 geo search is authenticated). Set it in .env.");
-  process.exit(1);
-}
-
-// --- Primary: geographic search ---
-console.log(`Geo search: Riftbound within ${MILES}mi of (${LAT}, ${LNG})...`);
-const events = await searchEventsGeo({ lat: LAT, lng: LNG, miles: MILES });
-let kept = 0, dropped = 0;
-for (const e of events) {
-  if (!isSardinianStore(e.store)) { dropped++; continue; } // drop Corsica/France etc.
-  recordStore(e.store);
-  add(e, "geo");
-  kept++;
-}
-console.log(`  ${events.length} events in radius -> ${kept} Sardinian, ${dropped} outside region.`);
-
-// --- Safety net: your own past registrations (in case any fall outside radius) ---
-try {
-  const regs = await getMyPastRegistrations();
-  let extra = 0;
-  for (const r of regs) {
-    const e = r.magic_event || {};
-    if (!isSardinianStore(e.store)) continue;
-    if (!catalog.has(String(e.id))) extra++;
-    add(e, "mine");
+let stores = 0, events = 0;
+transaction(() => {
+  const storeSeen = new Set();
+  for (const e of seen.values()) {
+    const s = e.store || {};
+    const country = (s.country || "").toUpperCase() || null;
+    const region = normalizeRegion(country, s.state ?? s.administrative_area_level_1_short ?? null);
+    if (s.id != null && !storeSeen.has(s.id)) {
+      upsertStore({ id: s.id, name: s.name ?? null, country, region, city: s.city ?? null,
+        lat: typeof s.latitude === "number" ? s.latitude : null,
+        lng: typeof s.longitude === "number" ? s.longitude : null });
+      storeSeen.add(s.id); stores++;
+    }
+    upsertEvent({
+      id: e.id, name: e.name_pretty || e.name || "", store_id: s.id ?? null,
+      date: e.start_datetime || null, game: "riftbound",
+      country, region, city: s.city ?? null,
+      lat: typeof s.latitude === "number" ? s.latitude : null,
+      lng: typeof s.longitude === "number" ? s.longitude : null,
+      continent: continentOf(country),
+    });
+    events++;
   }
-  if (extra) console.log(`  +${extra} extra event(s) from your history.`);
-} catch (e) { console.error(`  past registrations skipped: ${e.message}`); }
+});
 
-// --- Output ---
-const rows = [...catalog.values()]
-  .map((r) => ({ ...r, sources: [...r.sources] }))
-  .sort((a, b) => String(a.date).localeCompare(String(b.date)));
-
-const byStore = new Map();
-for (const r of rows) byStore.set(r.store, (byStore.get(r.store) || 0) + 1);
-console.log(`\n${rows.length} Sardinian Riftbound events across ${byStore.size} stores:`);
-for (const [s, c] of [...byStore.entries()].sort((a, b) => b[1] - a[1])) console.log(`  ${String(c).padStart(3)}  ${s}`);
-
-mkdirSync("data", { recursive: true });
-writeFileSync("data/sardinian-events.json", JSON.stringify(rows, null, 2));
-writeFileSync("data/stores.json", JSON.stringify([...storesGeo.values()], null, 2));
-console.log(`\nWrote data/sardinian-events.json (${rows.length}) and data/stores.json (${storesGeo.size}).`);
+const byCountry = db.prepare(
+  "SELECT country, COUNT(*) n FROM events GROUP BY country ORDER BY n DESC LIMIT 12").all();
+console.log(`\nUpserted ${events} events / ${stores} stores (scope "${SCOPE}").`);
+console.log("Events in DB by country:", byCountry.map((r) => `${r.country || "?"}:${r.n}`).join("  "));
+const pend = db.prepare(
+  "SELECT COUNT(*) n FROM events WHERE ingested_at IS NULL AND date < datetime('now')").get();
+console.log(`Pending past events (any country): ${pend.n}`);

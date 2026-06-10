@@ -163,6 +163,26 @@ const players = ratingRows.map((p) => {
 players.sort((a, b) => b.rating - a.rating);
 const playerById = new Map(players.map((p) => [p.id, p]));
 
+// --- per-scope leaderboard positions (embedded in player profiles) ---
+// ELO rank = position by rating among ALL players of the scope; Race rank =
+// position by 12-month points among scoring players of the scope.
+const allScopes = new Set(["global", ...players.flatMap((p) => p.scopes)]);
+const positionsOf = new Map(); // pid -> [{scope, elo, of, race, raceOf}]
+for (const scope of allScopes) {
+  const inScope = scope === "global" ? players : players.filter((p) => p.scopes.includes(scope));
+  const byRace = inScope.filter((p) => p.race.points > 0)
+    .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
+  const raceRank = new Map(byRace.map((p, i) => [p.id, i + 1]));
+  inScope.forEach((p, i) => { // players are rating-sorted, so i+1 is the ELO rank
+    let arr = positionsOf.get(p.id);
+    if (!arr) { arr = []; positionsOf.set(p.id, arr); }
+    arr.push({ scope, elo: i + 1, of: inScope.length, race: raceRank.get(p.id) ?? null, raceOf: byRace.length });
+  });
+}
+// display order: Sardegna, countries, continents, global
+const CONT_KEYS = new Set(Object.keys(CONTINENT_LABELS).map((k) => k.toLowerCase()));
+const scopeWeight = (s) => (s === "sardegna" ? 0 : s === "global" ? 3 : CONT_KEYS.has(s) ? 2 : 1);
+
 mkdirSync("site", { recursive: true });
 
 // --- 1) legacy data.json (Sardegna-scoped, keeps live page working) ---
@@ -190,7 +210,6 @@ const lbRow = (p) => ({
   games: p.games, wins: p.wins, losses: p.losses, draws: p.draws,
   provisional: p.provisional, race: p.race,
 });
-const allScopes = new Set(["global", ...players.flatMap((p) => p.scopes)]);
 rmSync("site/leaderboards", { recursive: true, force: true });
 mkdirSync("site/leaderboards", { recursive: true });
 const scopeMeta = [];
@@ -224,6 +243,8 @@ for (const p of players) {
       return { id: m.id, oppId, oppHandle: playerById.get(oppId)?.handle || "?",
         result, date: m.date, eventId: m.eventId, eventName: events[m.eventId]?.name || "" };
     });
-  writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, matches: ms }));
+  const positions = (positionsOf.get(p.id) || []).slice()
+    .sort((a, b) => scopeWeight(a.scope) - scopeWeight(b.scope) || a.scope.localeCompare(b.scope));
+  writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, positions, matches: ms }));
 }
 console.log(`players: ${players.length} profile shards`);

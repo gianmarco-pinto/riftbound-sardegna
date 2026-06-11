@@ -32,6 +32,34 @@ function* walk(dir) {
 }
 
 const base = URL.replace(/\/$/, "");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Storage occasionally throws transient 5xx during bulk uploads — retry before
+// declaring failure (a single 502 once failed a whole otherwise-green run).
+async function upload(key, body) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const res = await fetch(`${base}/storage/v1/object/${BUCKET}/${key}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${KEY}`, apikey: KEY, "Content-Type": "application/json",
+          "x-upsert": "true", "cache-control": "max-age=60" },
+        body,
+      });
+      if (res.ok) return true;
+      if (res.status < 500 && res.status !== 429) { // hard error: do not retry
+        console.error(`  ✗ ${key}: ${res.status} ${(await res.text().catch(() => "")).slice(0, 120)}`);
+        return false;
+      }
+      console.warn(`  ~ ${key}: ${res.status}, retry ${attempt}/4`);
+    } catch (e) {
+      console.warn(`  ~ ${key}: ${e.message}, retry ${attempt}/4`);
+    }
+    await sleep(1500 * attempt);
+  }
+  console.error(`  ✗ ${key}: still failing after retries`);
+  return false;
+}
+
 let uploaded = 0, skipped = 0, failed = 0;
 const next = {};
 for (const path of walk("site")) {
@@ -40,17 +68,8 @@ for (const path of walk("site")) {
   const hash = createHash("sha1").update(body).digest("hex");
   next[key] = hash;
   if (manifest[key] === hash) { skipped++; continue; }
-  const res = await fetch(`${base}/storage/v1/object/${BUCKET}/${key}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${KEY}`, apikey: KEY, "Content-Type": "application/json",
-      "x-upsert": "true", "cache-control": "max-age=60" },
-    body,
-  });
-  if (!res.ok) {
-    failed++;
-    console.error(`  ✗ ${key}: ${res.status} ${(await res.text().catch(() => "")).slice(0, 120)}`);
-    delete next[key]; // retry next run
-  } else uploaded++;
+  if (await upload(key, body)) uploaded++;
+  else { failed++; delete next[key]; } // retried next run via manifest miss
 }
 writeFileSync(MANIFEST, JSON.stringify(next));
 console.log(`Published: ${uploaded} uploaded, ${skipped} unchanged, ${failed} failed -> bucket "${BUCKET}".`);

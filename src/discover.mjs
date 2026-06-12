@@ -45,18 +45,30 @@ const windows = monthWindows(AFTER, BEFORE);
 const seen = new Map(); // eventId -> raw event
 
 // World scope: one global month-windowed sweep, no geography.
-// A failed window is logged and skipped (it will be re-swept next run) —
-// one stubborn 5xx must not abort the whole catalog.
-if (SCOPE === "world") {
-  for (const [from, to] of windows) {
-    try {
-      const events = await searchEventsGlobal({ after: from, before: to });
-      for (const e of events) if (!seen.has(e.id)) seen.set(e.id, e);
-      console.log(`  world ${from.slice(0, 7)}: ${events.length} events (running total ${seen.size})`);
-    } catch (e) {
-      console.error(`  ! world window ${from.slice(0, 7)} failed (${e.message}) — skipped, retried next run`);
+// On failure the window is BISECTED: the API dies deterministically on some
+// pages (a corrupt record mid-April kills page 38 every time), so halving the
+// window until the poisoned slice is hours wide loses almost nothing instead
+// of a whole month.
+async function sweepWorldWindow(from, to, depth = 0) {
+  try {
+    const events = await searchEventsGlobal({ after: from, before: to });
+    for (const e of events) if (!seen.has(e.id)) seen.set(e.id, e);
+    if (depth === 0) console.log(`  world ${from.slice(0, 7)}: ${events.length} events (running total ${seen.size})`);
+    return;
+  } catch (e) {
+    const span = Date.parse(to) - Date.parse(from);
+    if (span <= 6 * 3600e3 || depth >= 8) {
+      console.error(`  ! world slice ${from} -> ${to} unreadable (${e.message}) — skipped`);
+      return;
     }
+    const mid = new Date((Date.parse(from) + Date.parse(to)) / 2).toISOString();
+    console.warn(`  ~ world window ${from.slice(0, 10)}..${to.slice(0, 10)} failed, bisecting`);
+    await sweepWorldWindow(from, mid, depth + 1);
+    await sweepWorldWindow(mid, to, depth + 1);
   }
+}
+if (SCOPE === "world") {
+  for (const [from, to] of windows) await sweepWorldWindow(from, to);
 }
 
 for (const [i, c] of circles.entries()) {

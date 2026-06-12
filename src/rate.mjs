@@ -32,7 +32,21 @@ const TOP = Number(opt("--top", 40));
 // already raises absent players' RD once per missed week (Glicko-2 step 6) —
 // adding more would double-count inactivity.
 const C_DECAY = Number(process.env.RD_DECAY_C || 0);
-const PROVISIONAL_RD = 110;
+
+// --- league rules (env-overridable) ---
+// A player is PROVISIONAL (visible but unranked) when ANY of:
+//   - rating still uncertain (rd above threshold)
+//   - fewer than 25 games played
+//   - inactive for more than ~3 months
+// Inactive players also lose DISPLAYED rating: after a grace period the shown
+// ELO decays per week of inactivity (capped). The underlying skill estimate is
+// untouched — play one event and the decay stops accruing.
+const PROVISIONAL_RD = Number(process.env.PROVISIONAL_RD || 110);
+const MIN_GAMES_ESTABLISHED = Number(process.env.MIN_GAMES_ESTABLISHED || 25);
+const INACTIVE_PROVISIONAL_WEEKS = Number(process.env.INACTIVE_PROVISIONAL_WEEKS || 13); // ~3 months
+const DECAY_GRACE_WEEKS = Number(process.env.DECAY_GRACE_WEEKS || 8);   // ~2 months untouched
+const DECAY_PER_WEEK = Number(process.env.DECAY_PER_WEEK || 5);         // ELO points/week after grace
+const DECAY_MAX = Number(process.env.DECAY_MAX || 150);                 // decay cap
 
 const ranking = new Glicko2({ tau: 0.5, rating: 1500, rd: 350, vol: 0.06 });
 const players = new Map(); // id -> glicko player
@@ -110,14 +124,19 @@ transaction(() => {
     const mt = meta.get(id);
     const weeks = mt.lastDate ? Math.max(0, (latest - new Date(mt.lastDate)) / 6048e5) : 0;
     const rd = Math.min(350, Math.sqrt(p.getRd() ** 2 + (C_DECAY ** 2) * weeks));
+    const decay = Math.min(DECAY_MAX, Math.max(0, weeks - DECAY_GRACE_WEEKS) * DECAY_PER_WEEK);
+    const provisional =
+      rd > PROVISIONAL_RD ||
+      mt.games < MIN_GAMES_ESTABLISHED ||
+      weeks > INACTIVE_PROVISIONAL_WEEKS;
     upsertRating({
       player_id: id,
-      rating: Math.round(p.getRating()),
+      rating: Math.round(p.getRating() - decay),
       rd: Math.round(rd),
       vol: +p.getVol().toFixed(4),
       games: mt.games, wins: mt.wins, losses: mt.losses, draws: mt.draws,
       last_date: mt.lastDate,
-      provisional: rd > PROVISIONAL_RD,
+      provisional,
     });
   }
 });

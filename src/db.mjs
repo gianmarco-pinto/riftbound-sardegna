@@ -121,15 +121,19 @@ export const upsertEvent = (e) =>
 export const markIngested = (id) =>
   db.prepare("UPDATE events SET ingested_at = ? WHERE id = ?").run(new Date().toISOString(), id);
 
-/** Past events in enabled countries not yet ingested, oldest first.
- *  countries = ["*"] disables the country gate (worldwide ingestion). */
+/** Past events in enabled countries not yet ingested.
+ *  countries = ["*"] disables the country gate (worldwide ingestion).
+ *  Priority: ALREADY-LIVE scopes first (IT — the published site must stay
+ *  fresh daily during the worldwide backfill), then the rest oldest-first.
+ *  Ingestion order never affects ratings: rate.mjs always recomputes the
+ *  full history in weekly periods. */
 export const pendingEvents = (countries, limit) => {
   const worldwide = countries.length === 1 && countries[0] === "*";
   const gate = worldwide ? "" : `AND country IN (${countries.map(() => "?").join(",")})`;
   return db.prepare(`
     SELECT id, name, date, country, region FROM events
     WHERE ingested_at IS NULL AND date < ? ${gate}
-    ORDER BY date ASC LIMIT ?`)
+    ORDER BY CASE WHEN country = 'IT' THEN 0 ELSE 1 END, date ASC LIMIT ?`)
     .all(new Date().toISOString(), ...(worldwide ? [] : countries), limit);
 };
 

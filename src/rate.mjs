@@ -27,7 +27,11 @@ const opt = (flag, def) => { const i = args.indexOf(flag); return i >= 0 ? args[
 const REGION = opt("--region", null);
 const MIN_GAMES = Number(opt("--min-games", 1));
 const TOP = Number(opt("--top", 40));
-const C_DECAY = Number(process.env.RD_DECAY_C || 35); // RD growth per sqrt(week) of inactivity
+// Extra RD growth per sqrt(week) of inactivity ON TOP of the engine's own
+// per-period growth. Defaults to 0: with weekly rating periods the engine
+// already raises absent players' RD once per missed week (Glicko-2 step 6) —
+// adding more would double-count inactivity.
+const C_DECAY = Number(process.env.RD_DECAY_C || 0);
 const PROVISIONAL_RD = 110;
 
 const ranking = new Glicko2({ tau: 0.5, rating: 1500, rd: 350, vol: 0.06 });
@@ -41,41 +45,58 @@ const getP = (id) => {
   return players.get(id);
 };
 
-// Group rated matches by event, process events chronologically.
+// Group rated matches into WEEKLY rating periods (epoch-week buckets).
+// One-period-per-event breaks at scale: the engine raises the RD of every
+// absent player at each updateRatings() call, so with thousands of events
+// (Italy-wide) everyone's RD exploded into "provisional". Weekly periods keep
+// the call count proportional to TIME (~52/year), as Glicko-2 intends, and
+// give the recommended 10-15 games per player per period.
 const matches = allRatedMatches();
 const evDate = eventDates();
-const byEvent = new Map();
+const periodOf = (m) => {
+  const t = Date.parse(evDate.get(m.eventId) ?? m.date ?? "");
+  return Number.isNaN(t) ? -1 : Math.floor(t / 6048e5); // epoch week
+};
+const byPeriod = new Map();
 for (const m of matches) {
-  if (!byEvent.has(m.eventId)) byEvent.set(m.eventId, []);
-  byEvent.get(m.eventId).push(m);
+  const k = periodOf(m);
+  if (!byPeriod.has(k)) byPeriod.set(k, []);
+  byPeriod.get(k).push(m);
 }
-const events = [...byEvent.keys()].sort((a, b) =>
-  String(evDate.get(a) || "").localeCompare(String(evDate.get(b) || "")));
+const periods = [...byPeriod.keys()].sort((a, b) => a - b);
 
 clearRatings();
 transaction(() => {
-  for (const eid of events) {
+  for (const pk of periods) {
     const period = [];
-    const played = new Set();
-    for (const m of byEvent.get(eid)) {
+    const playedEvents = new Map(); // pid -> Set(eventId) within this week
+    const mark = (pid, eid) => {
+      let s = playedEvents.get(pid);
+      if (!s) { s = new Set(); playedEvents.set(pid, s); }
+      s.add(eid);
+    };
+    for (const m of byPeriod.get(pk)) {
       const A = getP(m.playerA), B = getP(m.playerB);
       const ma = meta.get(m.playerA), mb = meta.get(m.playerB);
       ma.games++; mb.games++;
-      ma.lastDate = mb.lastDate = evDate.get(eid);
+      ma.lastDate = mb.lastDate = evDate.get(m.eventId);
       let outcome;
       if (m.winner === "A") { outcome = 1; ma.wins++; mb.losses++; }
       else if (m.winner === "B") { outcome = 0; mb.wins++; ma.losses++; }
       else { outcome = 0.5; ma.draws++; mb.draws++; }
       period.push([A, B, outcome]);
-      played.add(m.playerA); played.add(m.playerB);
+      mark(m.playerA, m.eventId); mark(m.playerB, m.eventId);
     }
     ranking.updateRatings(period);
-    for (const id of played) {
-      const p = players.get(id);
-      insertSnapshot({
-        player_id: id, event_id: eid, date: evDate.get(eid),
-        rating: Math.round(p.getRating()), rd: Math.round(p.getRd()), vol: +p.getVol().toFixed(4),
-      });
+    // snapshot the post-week rating against each event the player played
+    for (const [pid, evs] of playedEvents) {
+      const p = players.get(pid);
+      for (const eid of evs) {
+        insertSnapshot({
+          player_id: pid, event_id: eid, date: evDate.get(eid),
+          rating: Math.round(p.getRating()), rd: Math.round(p.getRd()), vol: +p.getVol().toFixed(4),
+        });
+      }
     }
   }
 
@@ -83,7 +104,7 @@ transaction(() => {
   // Reference time is clamped to NOW: events sometimes carry bogus FUTURE dates
   // (organizer typos, e.g. an October event with results in June) — using the
   // raw max event date once inflated everyone's RD into "provisional".
-  const lastEvent = events.length ? Date.parse(evDate.get(events[events.length - 1])) : NaN;
+  const lastEvent = periods.length ? (periods[periods.length - 1] + 1) * 6048e5 : NaN;
   const latest = new Date(Math.min(Date.now(), Number.isNaN(lastEvent) ? Date.now() : lastEvent));
   for (const [id, p] of players) {
     const mt = meta.get(id);

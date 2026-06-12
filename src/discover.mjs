@@ -15,7 +15,12 @@ import { CIRCLES, continentOf, ORGANIZER_STORE_IDS, countryFromAddress } from ".
 import { upsertStore, upsertEvent, transaction, db } from "./db.mjs";
 
 const SCOPE = (process.env.DISCOVER_SCOPE || "it").toLowerCase();
-const AFTER = process.env.DISCOVER_AFTER || "2025-10-01T00:00:00Z"; // Riftbound launch
+// Full-history sweep by default; set DISCOVER_LOOKBACK_DAYS (e.g. 45) once the
+// historical catalog is in the DB — routine runs then only sweep the recent
+// window instead of re-paging the whole timeline every 2 hours.
+const AFTER = process.env.DISCOVER_LOOKBACK_DAYS
+  ? new Date(Date.now() - Number(process.env.DISCOVER_LOOKBACK_DAYS) * 864e5).toISOString()
+  : (process.env.DISCOVER_AFTER || "2025-10-01T00:00:00Z"); // Riftbound launch
 const BEFORE = new Date(Date.now() + 60 * 24 * 3600e3).toISOString(); // +60d of upcoming
 
 const circles = SCOPE === "world" ? [] : CIRCLES[SCOPE];

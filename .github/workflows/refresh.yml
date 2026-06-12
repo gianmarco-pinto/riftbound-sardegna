@@ -15,7 +15,7 @@ name: refresh-rankings
 on:
   schedule:
     # 02:23 UTC = 04:23 Italy (CEST) — overnight, off the busy top-of-hour slot.
-    - cron: "23 2 * * *"
+    - cron: "23 */2 * * *"
   workflow_dispatch:
     inputs:
       max_events:

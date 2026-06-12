@@ -194,18 +194,24 @@ export async function getRoundMatches(roundId) {
  * names ever shown), and the same call works worldwide.
  */
 export async function getRoundStandingsV2(roundId) {
-  // paged: Regional Qualifiers have 1,500+ players
-  const all = [];
+  // paged: Regional Qualifiers have 1,500+ players. Dedupe by player id and
+  // stop if a page repeats (some deployments ignore the page param — without
+  // this guard a 200-player event could be recorded as 10,000 participants).
+  const byId = new Map();
   for (let page = 1; page <= 20; page++) {
     const j = await get(
       `/api/v2/tournament-rounds/${roundId}/standings/?game_slug=${GAME_SLUG}&page_size=500&page=${page}`,
       { auth: true }
     );
     const batch = j.standings || j.results || [];
-    all.push(...batch);
-    if (batch.length < 500) break;
+    const before = byId.size;
+    for (const s of batch) {
+      const id = s.player?.id ?? `anon-${byId.size}`;
+      if (!byId.has(id)) byId.set(id, s);
+    }
+    if (batch.length < 500 || byId.size === before) break; // last page or page param ignored
   }
-  return all;
+  return [...byId.values()];
 }
 
 /** The logged-in user's own past event registrations (TOKEN). Handy seed for

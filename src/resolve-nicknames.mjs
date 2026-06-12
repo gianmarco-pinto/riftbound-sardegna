@@ -47,7 +47,7 @@ for (const { id: eventId } of todo) {
             if (!nicks[k]) nickAdded++;
             nicks[k] = nick;
           }
-          if (s.rank != null) upsertPlacement(eventId, String(id), s.rank, standings.length);
+          if (s.rank != null) upsertPlacement(eventId, String(id), s.rank, new Set(standings.map((x) => x.player?.id)).size);
         }
       });
       placed++;

@@ -30,6 +30,28 @@ export const CIRCLES = {
 export const INGEST_COUNTRIES = (process.env.INGEST_COUNTRIES || "IT")
   .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 
+// Official-organizer "stores" (no geo coordinates -> invisible to the circle
+// sweep). Their events (Regional Qualifiers, PAX, championships...) are swept
+// separately by store id; the venue country is parsed from the event address.
+export const ORGANIZER_STORE_IDS = (process.env.ORGANIZER_STORE_IDS || "19428") // UVS Games Organized Play
+  .split(",").map((s) => Number(s.trim())).filter(Boolean);
+
+// Country-name -> ISO code for venue addresses ("..., Bologna BO, Italy").
+const COUNTRY_NAMES = {
+  italy: "IT", italia: "IT", usa: "US", "united states": "US", france: "FR",
+  spain: "ES", españa: "ES", germany: "DE", deutschland: "DE", "united kingdom": "GB",
+  uk: "GB", netherlands: "NL", belgium: "BE", austria: "AT", switzerland: "CH",
+  portugal: "PT", poland: "PL", canada: "CA", mexico: "MX", méxico: "MX",
+  australia: "AU", japan: "JP", "south korea": "KR", brazil: "BR", brasil: "BR",
+};
+/** Parse the country from a venue address tail (ISO code or country name). */
+export function countryFromAddress(fullAddress) {
+  if (!fullAddress) return null;
+  const tail = fullAddress.split(",").map((s) => s.trim()).filter(Boolean).pop() || "";
+  if (/^[A-Z]{2}$/.test(tail)) return tail;
+  return COUNTRY_NAMES[tail.toLowerCase()] || null;
+}
+
 // country code -> continent code (EU, AM, AS, OC, AF)
 const C = {
   EU: "IT FR ES PT DE AT CH GB IE NL BE LU PL CZ SK HU SI HR RS BA RO BG GR MT CY SE NO DK FI IS EE LV LT UA MD AL MK ME TR".split(" "),

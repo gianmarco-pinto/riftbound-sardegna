@@ -118,6 +118,28 @@ export async function searchEventsGeo({
   return all;
 }
 
+/**
+ * All events run by specific organizer stores (TOKEN) — e.g. "UVS Games
+ * Organized Play", whose Regional Qualifiers carry no store coordinates and
+ * are invisible to the geo sweep. Returns raw v2 events.
+ */
+export async function searchEventsByStores(storeIds, {
+  after = "2024-01-01T00:00:00Z", before = "2027-12-31T00:00:00Z",
+  pageSize = 100, maxPages = 40,
+} = {}) {
+  const all = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const qs = new URLSearchParams({
+      store_ids: storeIds.join(","), game_slug: GAME_SLUG,
+      start_date_after: after, start_date_before: before, page_size: pageSize, page,
+    });
+    const j = await get(`/api/v2/events/?${qs}`, { auth: true });
+    all.push(...(j.results || []));
+    if (!j.next) break;
+  }
+  return all;
+}
+
 /** Rounds/phases for an event (TOKEN). Returns the raw phase list. */
 export async function getEventRounds(eventId) {
   return get(`/api/magic-events/${eventId}/get_all_rounds/`, { auth: true });
@@ -153,11 +175,18 @@ export async function getRoundMatches(roundId) {
  * names ever shown), and the same call works worldwide.
  */
 export async function getRoundStandingsV2(roundId) {
-  const j = await get(
-    `/api/v2/tournament-rounds/${roundId}/standings/?game_slug=${GAME_SLUG}&page_size=1000`,
-    { auth: true }
-  );
-  return j.standings || j.results || [];
+  // paged: Regional Qualifiers have 1,500+ players
+  const all = [];
+  for (let page = 1; page <= 20; page++) {
+    const j = await get(
+      `/api/v2/tournament-rounds/${roundId}/standings/?game_slug=${GAME_SLUG}&page_size=500&page=${page}`,
+      { auth: true }
+    );
+    const batch = j.standings || j.results || [];
+    all.push(...batch);
+    if (batch.length < 500) break;
+  }
+  return all;
 }
 
 /** The logged-in user's own past event registrations (TOKEN). Handy seed for

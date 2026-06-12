@@ -10,8 +10,8 @@
 // Usage:  node --env-file=.env src/discover.mjs          (token required)
 //   env: DISCOVER_SCOPE=it|eu   DISCOVER_AFTER=2025-10-01
 
-import { searchEventsGeo, normalizeRegion } from "./uvsgames.mjs";
-import { CIRCLES, continentOf } from "./scopes.mjs";
+import { searchEventsGeo, searchEventsByStores, normalizeRegion } from "./uvsgames.mjs";
+import { CIRCLES, continentOf, ORGANIZER_STORE_IDS, countryFromAddress } from "./scopes.mjs";
 import { upsertStore, upsertEvent, transaction, db } from "./db.mjs";
 
 const SCOPE = (process.env.DISCOVER_SCOPE || "it").toLowerCase();
@@ -75,6 +75,36 @@ transaction(() => {
     events++;
   }
 });
+
+// --- Organizer sweep: official events (Regional Qualifiers, PAX, champs...) ---
+// Their "store" has no coordinates (invisible to circles) and its country is
+// the organizer's HQ (US), so the venue country is parsed from the EVENT
+// address ("..., 40127 Bologna BO, Italy" -> IT).
+let orgCount = 0;
+try {
+  const orgEvents = await searchEventsByStores(ORGANIZER_STORE_IDS, { after: AFTER, before: BEFORE });
+  transaction(() => {
+    for (const e of orgEvents) {
+      const s = e.store || {};
+      if (s.id != null) {
+        upsertStore({ id: s.id, name: s.name ?? null, country: (s.country || "").toUpperCase() || null,
+          region: null, city: null, lat: null, lng: null });
+      }
+      const venueCountry = countryFromAddress(e.event_address_override || e.full_address) ||
+        (s.country || "").toUpperCase() || null;
+      upsertEvent({
+        id: e.id, name: e.name_pretty || e.name || "", store_id: s.id ?? null,
+        date: e.start_datetime || null, game: "riftbound",
+        country: venueCountry, region: null, city: null, lat: null, lng: null,
+        continent: continentOf(venueCountry),
+      });
+      orgCount++;
+    }
+  });
+  console.log(`Organizer sweep: ${orgEvents.length} official events upserted (stores: ${ORGANIZER_STORE_IDS.join(",")}).`);
+} catch (e) {
+  console.error(`Organizer sweep failed (non-fatal): ${e.message}`);
+}
 
 const byCountry = db.prepare(
   "SELECT country, COUNT(*) n FROM events GROUP BY country ORDER BY n DESC LIMIT 12").all();

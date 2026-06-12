@@ -46,19 +46,34 @@ function headers({ auth = false } = {}) {
   return h;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Transient 5xx/429/network errors are routine at bulk-crawl volumes — retry
+// with backoff before giving up (a single 502 once killed a whole CI run).
+// Hard auth errors (401/403) fail fast with a clear message.
 async function get(path, { auth = false } = {}) {
-  const res = await fetch(BASE + path, { headers: headers({ auth }) });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    if (res.status === 401) {
-      throw new Error(`401 on ${path} — token missing/expired. Refresh UVS_TOKEN.`);
+  let lastErr;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    let res;
+    try {
+      res = await fetch(BASE + path, { headers: headers({ auth }) });
+    } catch (e) {
+      lastErr = e; // network-level error
+      await sleep(1500 * attempt);
+      continue;
     }
-    if (res.status === 403) {
-      throw new Error(`403 on ${path} — token lacks permission for this resource.`);
+    if (res.ok) return res.json();
+    const body = await res.text().catch(() => "");
+    if (res.status === 401) throw new Error(`401 on ${path} — token missing/expired. Refresh UVS_TOKEN.`);
+    if (res.status === 403) throw new Error(`403 on ${path} — token lacks permission for this resource.`);
+    if (res.status >= 500 || res.status === 429) {
+      lastErr = new Error(`GET ${path} -> ${res.status}`);
+      await sleep(1500 * attempt);
+      continue;
     }
     throw new Error(`GET ${path} -> ${res.status} ${body.slice(0, 160)}`);
   }
-  return res.json();
+  throw new Error(`${lastErr?.message || "request failed"} (after 4 attempts)`);
 }
 
 /**

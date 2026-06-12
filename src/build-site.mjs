@@ -43,11 +43,12 @@ const TIERS = { 1: "Pre-Rift", 2: "Nexus Night", 3: "Skirmish", 4: "Regional Qua
 function classifyTier(name) {
   const n = name || "";
   if (/qualifier/i.test(n)) return 4;
-  if (/regional/i.test(n)) return 5;
+  // "Road to Regionals"/testing events are prep tournaments, not real Regionals
+  if (/regional/i.test(n) && !/road to|testing/i.test(n)) return 5;
   if (/skirmish/i.test(n)) return 3;
   if (/nexus/i.test(n)) return 2;
   if (/pre.?rift|release/i.test(n)) return 1;
-  return null;
+  return 2; // league rule: anything outside the nomenclature counts as a Nexus Night
 }
 
 // --- load core data ---

@@ -15,7 +15,7 @@
 // Usage:  node src/build-site.mjs
 
 import { db, allPlacements } from "./db.mjs";
-import { CONTINENT_LABELS } from "./scopes.mjs";
+import { CONTINENT_LABELS, continentOf } from "./scopes.mjs";
 import { writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 
 // --- display identity (nickname || initials; never real names) ---
@@ -236,11 +236,21 @@ for (const scope of allScopes) {
   scopeMeta.push({ scope, players: rows.length });
 }
 const countries = scopeMeta.filter((s) => /^[a-z]{2}$/.test(s.scope) && !CONTINENT_LABELS[s.scope.toUpperCase()]);
-const continents = scopeMeta.filter((s) => CONTINENT_LABELS[s.scope.toUpperCase()]);
+// Don't advertise scopes that aren't real yet: a continent only counts once it
+// has >=2 ingested countries, and "global" only once >=2 countries exist —
+// otherwise they'd just duplicate the single country (e.g. Europe == Italy).
+const countriesPerContinent = new Map();
+for (const c of countries) {
+  const cont = (continentOf(c.scope) || "").toLowerCase();
+  if (cont) countriesPerContinent.set(cont, (countriesPerContinent.get(cont) || 0) + 1);
+}
+const continents = scopeMeta.filter((s) =>
+  CONTINENT_LABELS[s.scope.toUpperCase()] && (countriesPerContinent.get(s.scope) || 0) >= 2);
+const special = scopeMeta.filter((s) =>
+  s.scope === "sardegna" || (s.scope === "global" && countries.length >= 2));
 writeFileSync("site/leaderboards/index.json", JSON.stringify({
   generatedAt: new Date().toISOString(),
-  special: scopeMeta.filter((s) => s.scope === "sardegna" || s.scope === "global"),
-  continents, countries,
+  special, continents, countries,
 }));
 console.log(`leaderboards: ${scopeMeta.length} scopes (${countries.length} countries, ${continents.length} continents)`);
 

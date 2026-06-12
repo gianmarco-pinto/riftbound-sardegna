@@ -80,7 +80,11 @@ transaction(() => {
   }
 
   // Final current ratings, with inactivity decay applied to RD only.
-  const latest = events.length ? new Date(evDate.get(events[events.length - 1])) : new Date();
+  // Reference time is clamped to NOW: events sometimes carry bogus FUTURE dates
+  // (organizer typos, e.g. an October event with results in June) — using the
+  // raw max event date once inflated everyone's RD into "provisional".
+  const lastEvent = events.length ? Date.parse(evDate.get(events[events.length - 1])) : NaN;
+  const latest = new Date(Math.min(Date.now(), Number.isNaN(lastEvent) ? Date.now() : lastEvent));
   for (const [id, p] of players) {
     const mt = meta.get(id);
     const weeks = mt.lastDate ? Math.max(0, (latest - new Date(mt.lastDate)) / 6048e5) : 0;

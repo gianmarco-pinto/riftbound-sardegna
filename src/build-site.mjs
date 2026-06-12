@@ -186,13 +186,18 @@ const allScopes = new Set(["global", ...publicPlayers.flatMap((p) => p.scopes)])
 const positionsOf = new Map(); // pid -> [{scope, elo, of, race, raceOf}]
 for (const scope of allScopes) {
   const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
+  // Chess-style rule: provisional ratings are UNRANKED — the official ELO rank
+  // counts established players only (keeps leaderboard and profile consistent
+  // under any min-games filter).
+  const ranked = inScope.filter((p) => !p.provisional); // rating-sorted already
+  const eloRank = new Map(ranked.map((p, i) => [p.id, i + 1]));
   const byRace = inScope.filter((p) => p.race.points > 0)
     .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
   const raceRank = new Map(byRace.map((p, i) => [p.id, i + 1]));
-  inScope.forEach((p, i) => { // players are rating-sorted, so i+1 is the ELO rank
+  inScope.forEach((p) => {
     let arr = positionsOf.get(p.id);
     if (!arr) { arr = []; positionsOf.set(p.id, arr); }
-    arr.push({ scope, elo: i + 1, of: inScope.length, race: raceRank.get(p.id) ?? null, raceOf: byRace.length });
+    arr.push({ scope, elo: eloRank.get(p.id) ?? null, of: ranked.length, race: raceRank.get(p.id) ?? null, raceOf: byRace.length });
   });
 }
 // display order: Sardegna, countries, continents, global

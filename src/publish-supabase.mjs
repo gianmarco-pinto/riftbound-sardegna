@@ -62,15 +62,31 @@ async function upload(key, body) {
 
 let uploaded = 0, skipped = 0, failed = 0;
 const next = {};
+const queue = [];
 for (const path of walk("site")) {
   const key = relative("site", path).split("\\").join("/"); // e.g. leaderboards/it.json
   const body = readFileSync(path);
   const hash = createHash("sha1").update(body).digest("hex");
   next[key] = hash;
   if (manifest[key] === hash) { skipped++; continue; }
-  if (await upload(key, body)) uploaded++;
-  else { failed++; delete next[key]; } // retried next run via manifest miss
+  queue.push([key, body]);
 }
+// Concurrent upload pool: 100k+ profile shards sequentially would blow the CI
+// time limit; 8 parallel streams keep it tractable.
+const CONCURRENCY = Number(process.env.PUBLISH_CONCURRENCY || 8);
+let cursor = 0;
+async function worker() {
+  for (;;) {
+    const i = cursor++;
+    if (i >= queue.length) return;
+    const [key, body] = queue[i];
+    if (await upload(key, body)) {
+      uploaded++;
+      if (uploaded % 1000 === 0) console.log(`  ...${uploaded}/${queue.length} uploaded`);
+    } else { failed++; delete next[key]; } // retried next run via manifest miss
+  }
+}
+await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 writeFileSync(MANIFEST, JSON.stringify(next));
 console.log(`Published: ${uploaded} uploaded, ${skipped} unchanged, ${failed} failed -> bucket "${BUCKET}".`);
 if (failed) process.exit(1);

@@ -1,29 +1,35 @@
 # Scheduled rankings refresh: discover -> ingest (capped) -> standings ->
-# rate -> build shards -> publish to Supabase. State (SQLite DB) persists
-# between runs in a private Supabase bucket.
+# rate -> build shards -> publish to Supabase. Pipeline state (SQLite DB)
+# persists between runs as assets of the "state" GitHub Release (2GB/file,
+# free) — Supabase's old private "state" bucket is read once as a migration
+# fallback.
 #
-# Required repo secrets:
-#   UVS_TOKEN             auth token for api.riftbound.uvsgames.com
-#   SUPABASE_URL          https://<project>.supabase.co
-#   SUPABASE_SERVICE_KEY  service_role key (write access)
+# Scope without code changes:
+#   repo variables DISCOVER_SCOPE (it|eu|world) and INGEST_COUNTRIES
+#   ("IT" | "IT,FR,..." | "*" = worldwide), overridable per-dispatch via inputs.
 #
-# Buckets (create once in Supabase): "rankings" (public), "state" (private).
+# Required repo secrets: UVS_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_KEY.
 
 name: refresh-rankings
 
 on:
   schedule:
-    # 02:23 UTC = 04:23 Italy (CEST) / 03:23 (CET) — overnight window, off the
-    # busy top-of-hour slot (GH Actions cron can drift a few minutes).
+    # 02:23 UTC = 04:23 Italy (CEST) — overnight, off the busy top-of-hour slot.
     - cron: "23 2 * * *"
   workflow_dispatch:
     inputs:
       max_events:
         description: "Max events to ingest this run"
         default: "800"
+      scope:
+        description: "Discovery scope (it|eu|world)"
+        default: ""
+      countries:
+        description: "Ingest countries (IT | IT,FR | * for worldwide)"
+        default: ""
 
 permissions:
-  contents: read
+  contents: write   # state release assets
 
 concurrency:
   group: refresh-rankings
@@ -32,13 +38,14 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 350
     env:
+      GH_TOKEN: ${{ github.token }}
       UVS_TOKEN: ${{ secrets.UVS_TOKEN }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      INGEST_COUNTRIES: IT
-      DISCOVER_SCOPE: it
+      DISCOVER_SCOPE: ${{ github.event.inputs.scope || vars.DISCOVER_SCOPE || 'it' }}
+      INGEST_COUNTRIES: ${{ github.event.inputs.countries || vars.INGEST_COUNTRIES || 'IT' }}
       MAX_EVENTS: ${{ github.event.inputs.max_events || '800' }}
       MAX_STANDINGS: ${{ github.event.inputs.max_events || '800' }}
     steps:
@@ -47,8 +54,14 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - name: Download state
-        run: node src/state.mjs download
+      - name: Download state (release, fallback Supabase)
+        run: |
+          mkdir -p data
+          gh release download state --dir data --clobber || echo "no state release yet"
+          if [ ! -f data/riftbound.db ]; then
+            echo "migrating state from Supabase bucket..."
+            node src/state.mjs download || true
+          fi
       - name: Discover events
         run: node src/discover.mjs
       - name: Ingest results (capped)
@@ -61,6 +74,8 @@ jobs:
         run: node src/build-site.mjs
       - name: Publish to Supabase
         run: node src/publish-supabase.mjs
-      - name: Upload state
+      - name: Upload state (release)
         if: always()
-        run: node src/state.mjs upload
+        run: |
+          gh release view state >/dev/null 2>&1 || gh release create state --title "pipeline state" --notes "SQLite DB and caches persisted between refresh runs. Machine-managed." --latest=false
+          gh release upload state data/riftbound.db data/nicknames-resolved.json data/publish-manifest.json --clobber

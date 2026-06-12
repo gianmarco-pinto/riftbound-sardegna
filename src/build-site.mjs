@@ -234,12 +234,16 @@ const lbRow = (p) => ({
 rmSync("site/leaderboards", { recursive: true, force: true });
 mkdirSync("site/leaderboards", { recursive: true });
 const scopeMeta = [];
+// Big scopes are capped: a worldwide board would be a 10MB+ download. Profiles
+// and positions still cover EVERY player; the shard just lists the top rows.
+const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 2000);
 for (const scope of allScopes) {
-  const rows = (scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope))).map(lbRow);
-  if (!rows.length) continue;
+  const all = (scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope)));
+  if (!all.length) continue;
+  const rows = all.slice(0, MAX_ROWS).map(lbRow);
   writeFileSync(`site/leaderboards/${scope}.json`,
-    JSON.stringify({ scope, generatedAt: new Date().toISOString(), players: rows }));
-  scopeMeta.push({ scope, players: rows.length });
+    JSON.stringify({ scope, generatedAt: new Date().toISOString(), totalPlayers: all.length, players: rows }));
+  scopeMeta.push({ scope, players: all.length });
 }
 const countries = scopeMeta.filter((s) => /^[a-z]{2}$/.test(s.scope) && !CONTINENT_LABELS[s.scope.toUpperCase()]);
 // Don't advertise scopes that aren't real yet: a continent only counts once it

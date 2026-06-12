@@ -119,6 +119,25 @@ export async function searchEventsGeo({
 }
 
 /**
+ * GLOBAL event sweep (TOKEN): all Riftbound events worldwide in a date window,
+ * no geo filter (the v2 endpoint accepts game_slug+dates alone). Callers
+ * should iterate month windows to stay within pagination caps (~32k/month).
+ */
+export async function searchEventsGlobal({ after, before, pageSize = 100, maxPages = 400 } = {}) {
+  const all = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const qs = new URLSearchParams({
+      game_slug: GAME_SLUG, start_date_after: after, start_date_before: before,
+      page_size: pageSize, page,
+    });
+    const j = await get(`/api/v2/events/?${qs}`, { auth: true });
+    all.push(...(j.results || []));
+    if (!j.next) break;
+  }
+  return all;
+}
+
+/**
  * All events run by specific organizer stores (TOKEN) — e.g. "UVS Games
  * Organized Play", whose Regional Qualifiers carry no store coordinates and
  * are invisible to the geo sweep. Returns raw v2 events.

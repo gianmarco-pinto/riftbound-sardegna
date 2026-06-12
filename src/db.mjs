@@ -121,12 +121,17 @@ export const upsertEvent = (e) =>
 export const markIngested = (id) =>
   db.prepare("UPDATE events SET ingested_at = ? WHERE id = ?").run(new Date().toISOString(), id);
 
-/** Past events in enabled countries not yet ingested, oldest first. */
-export const pendingEvents = (countries, limit) => db.prepare(`
-  SELECT id, name, date, country, region FROM events
-  WHERE ingested_at IS NULL AND date < ?
-    AND country IN (${countries.map(() => "?").join(",")})
-  ORDER BY date ASC LIMIT ?`).all(new Date().toISOString(), ...countries, limit);
+/** Past events in enabled countries not yet ingested, oldest first.
+ *  countries = ["*"] disables the country gate (worldwide ingestion). */
+export const pendingEvents = (countries, limit) => {
+  const worldwide = countries.length === 1 && countries[0] === "*";
+  const gate = worldwide ? "" : `AND country IN (${countries.map(() => "?").join(",")})`;
+  return db.prepare(`
+    SELECT id, name, date, country, region FROM events
+    WHERE ingested_at IS NULL AND date < ? ${gate}
+    ORDER BY date ASC LIMIT ?`)
+    .all(new Date().toISOString(), ...(worldwide ? [] : countries), limit);
+};
 
 // --- placements ---
 const _placement = db.prepare(`

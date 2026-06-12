@@ -10,7 +10,7 @@
 // Usage:  node --env-file=.env src/discover.mjs          (token required)
 //   env: DISCOVER_SCOPE=it|eu   DISCOVER_AFTER=2025-10-01
 
-import { searchEventsGeo, searchEventsByStores, normalizeRegion } from "./uvsgames.mjs";
+import { searchEventsGeo, searchEventsGlobal, searchEventsByStores, normalizeRegion } from "./uvsgames.mjs";
 import { CIRCLES, continentOf, ORGANIZER_STORE_IDS, countryFromAddress } from "./scopes.mjs";
 import { upsertStore, upsertEvent, transaction, db } from "./db.mjs";
 
@@ -18,8 +18,8 @@ const SCOPE = (process.env.DISCOVER_SCOPE || "it").toLowerCase();
 const AFTER = process.env.DISCOVER_AFTER || "2025-10-01T00:00:00Z"; // Riftbound launch
 const BEFORE = new Date(Date.now() + 60 * 24 * 3600e3).toISOString(); // +60d of upcoming
 
-const circles = CIRCLES[SCOPE];
-if (!circles) { console.error(`Unknown DISCOVER_SCOPE "${SCOPE}" (have: ${Object.keys(CIRCLES).join(", ")})`); process.exit(1); }
+const circles = SCOPE === "world" ? [] : CIRCLES[SCOPE];
+if (!circles) { console.error(`Unknown DISCOVER_SCOPE "${SCOPE}" (have: world, ${Object.keys(CIRCLES).join(", ")})`); process.exit(1); }
 if (!process.env.UVS_TOKEN) { console.error("UVS_TOKEN required."); process.exit(1); }
 
 // Sweep per month-window per circle: keeps each query well under the
@@ -38,6 +38,16 @@ function monthWindows(afterISO, beforeISO) {
 
 const windows = monthWindows(AFTER, BEFORE);
 const seen = new Map(); // eventId -> raw event
+
+// World scope: one global month-windowed sweep, no geography.
+if (SCOPE === "world") {
+  for (const [from, to] of windows) {
+    const events = await searchEventsGlobal({ after: from, before: to });
+    for (const e of events) if (!seen.has(e.id)) seen.set(e.id, e);
+    console.log(`  world ${from.slice(0, 7)}: ${events.length} events (running total ${seen.size})`);
+  }
+}
+
 for (const [i, c] of circles.entries()) {
   let circleTotal = 0, circleFresh = 0;
   for (const [from, to] of windows) {

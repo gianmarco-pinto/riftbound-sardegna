@@ -45,23 +45,33 @@ const windows = monthWindows(AFTER, BEFORE);
 const seen = new Map(); // eventId -> raw event
 
 // World scope: one global month-windowed sweep, no geography.
+// A failed window is logged and skipped (it will be re-swept next run) —
+// one stubborn 5xx must not abort the whole catalog.
 if (SCOPE === "world") {
   for (const [from, to] of windows) {
-    const events = await searchEventsGlobal({ after: from, before: to });
-    for (const e of events) if (!seen.has(e.id)) seen.set(e.id, e);
-    console.log(`  world ${from.slice(0, 7)}: ${events.length} events (running total ${seen.size})`);
+    try {
+      const events = await searchEventsGlobal({ after: from, before: to });
+      for (const e of events) if (!seen.has(e.id)) seen.set(e.id, e);
+      console.log(`  world ${from.slice(0, 7)}: ${events.length} events (running total ${seen.size})`);
+    } catch (e) {
+      console.error(`  ! world window ${from.slice(0, 7)} failed (${e.message}) — skipped, retried next run`);
+    }
   }
 }
 
 for (const [i, c] of circles.entries()) {
   let circleTotal = 0, circleFresh = 0;
   for (const [from, to] of windows) {
-    const events = await searchEventsGeo({
-      lat: c.lat, lng: c.lng, miles: c.miles, after: from, before: to, pageSize: 100, maxPages: 60,
-    });
-    if (events.length >= 100 * 60) console.warn(`  ! window ${from.slice(0, 7)} circle ${i + 1} hit page cap — possible truncation`);
-    circleTotal += events.length;
-    for (const e of events) if (!seen.has(e.id)) { seen.set(e.id, e); circleFresh++; }
+    try {
+      const events = await searchEventsGeo({
+        lat: c.lat, lng: c.lng, miles: c.miles, after: from, before: to, pageSize: 100, maxPages: 60,
+      });
+      if (events.length >= 100 * 60) console.warn(`  ! window ${from.slice(0, 7)} circle ${i + 1} hit page cap — possible truncation`);
+      circleTotal += events.length;
+      for (const e of events) if (!seen.has(e.id)) { seen.set(e.id, e); circleFresh++; }
+    } catch (e) {
+      console.error(`  ! circle ${i + 1} window ${from.slice(0, 7)} failed (${e.message}) — skipped, retried next run`);
+    }
   }
   console.log(`  circle ${i + 1}/${circles.length} (${c.lat},${c.lng} r${c.miles}mi): ${circleTotal} events across ${windows.length} months, ${circleFresh} new`);
 }

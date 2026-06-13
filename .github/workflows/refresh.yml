@@ -47,8 +47,8 @@ jobs:
       DISCOVER_SCOPE: ${{ github.event.inputs.scope || vars.DISCOVER_SCOPE || 'it' }}
       DISCOVER_LOOKBACK_DAYS: ${{ vars.DISCOVER_LOOKBACK_DAYS || '' }}
       INGEST_COUNTRIES: ${{ github.event.inputs.countries || vars.INGEST_COUNTRIES || 'IT' }}
-      MAX_EVENTS: ${{ github.event.inputs.max_events || '800' }}
-      MAX_STANDINGS: ${{ github.event.inputs.max_events || '800' }}
+      MAX_EVENTS: ${{ github.event.inputs.max_events || vars.MAX_EVENTS || '800' }}
+      MAX_STANDINGS: ${{ github.event.inputs.max_events || vars.MAX_EVENTS || '800' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

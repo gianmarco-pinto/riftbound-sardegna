@@ -15,7 +15,7 @@
 // Usage:  node src/build-site.mjs
 
 import { db, allPlacements } from "./db.mjs";
-import { CONTINENT_LABELS, continentOf } from "./scopes.mjs";
+import { CONTINENT_LABELS, continentOf, ORGANIZER_STORE_IDS } from "./scopes.mjs";
 import { writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 
 // --- display identity (nickname || initials; never real names) ---
@@ -39,25 +39,33 @@ const handleOf = (realName, id) =>
   EXCLUDED.has(String(id)) ? "Anonimo" : (MANUAL[String(id)] || RESOLVED[String(id)] || initials(realName));
 
 // --- tournament tiers ---
-const TIERS = { 1: "Pre-Rift", 2: "Nexus Night", 3: "Skirmish", 4: "Regional Qualifier", 5: "Regional" };
-function classifyTier(name) {
+const TIERS = { 1: "Pre-Rift", 2: "Nexus Night", 3: "Skirmish", 4: "Regional Qualifier", 5: "Regional Championship" };
+const OFFICIAL_STORES = new Set(ORGANIZER_STORE_IDS);
+// Regional Qualifier (4) and Regional Championship (5) are DISTINCT and exist
+// ONLY as official UVS main events — matched by exact phrase AND official store.
+// This excludes the swarm of look-alikes (store "Regional Qualifier
+// Celebration", "Pre-Regional Challenge", "Regional Rebound", "PPG Qualifier",
+// side-events like "Team Trios Sealed - RQ Bologna"), which fall through to the
+// local tiers. Everything outside the nomenclature counts as a Nexus Night.
+function classifyTier(name, official) {
   const n = name || "";
-  if (/qualifier/i.test(n)) return 4;
-  // "Road to Regionals"/testing events are prep tournaments, not real Regionals
-  if (/regional/i.test(n) && !/road to|testing/i.test(n)) return 5;
+  if (official) {
+    if (/regional championship/i.test(n)) return 5;
+    if (/regional qualifier/i.test(n)) return 4;
+  }
   if (/skirmish/i.test(n)) return 3;
   if (/nexus/i.test(n)) return 2;
   if (/pre.?rift|release/i.test(n)) return 1;
-  return 2; // league rule: anything outside the nomenclature counts as a Nexus Night
+  return 2;
 }
 
 // --- load core data ---
 const eventsRows = db.prepare(`
-  SELECT e.id, e.name, e.date, e.region, e.city, e.country, e.continent, s.name AS store
+  SELECT e.id, e.name, e.date, e.region, e.city, e.country, e.continent, e.store_id, s.name AS store
   FROM events e LEFT JOIN stores s ON s.id = e.store_id`).all();
 const events = {};
 for (const e of eventsRows) {
-  const tier = classifyTier(e.name);
+  const tier = classifyTier(e.name, OFFICIAL_STORES.has(e.store_id));
   events[e.id] = { ...e, tier, tierLabel: tier ? TIERS[tier] : null };
 }
 

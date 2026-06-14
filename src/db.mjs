@@ -151,6 +151,18 @@ export const eventsNeedingPlacements = (limit) => db.prepare(`
   WHERE NOT EXISTS (SELECT 1 FROM placements pl WHERE pl.event_id = e.id)
   ORDER BY e.date ASC LIMIT ?`).all(limit);
 
+/** Official-organizer events (RQ/Regional) that are ingested — re-fetched every
+ *  run so a final-standings update (top-cut) overwrites any intermediate-phase
+ *  result captured while the event was still running. They are few. */
+export const officialEventsToRefresh = (storeIds, limit) => {
+  if (!storeIds.length) return [];
+  return db.prepare(`
+    SELECT DISTINCT e.id FROM events e
+    JOIN matches m ON m.event_id = e.id
+    WHERE e.store_id IN (${storeIds.map(() => "?").join(",")})
+    ORDER BY e.date DESC LIMIT ?`).all(...storeIds, limit);
+};
+
 export const allPlacements = () => db.prepare(
   "SELECT event_id AS eventId, player_id AS playerId, rank, participants FROM placements").all();
 

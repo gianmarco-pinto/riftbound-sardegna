@@ -9,7 +9,8 @@
 //   env: MAX_STANDINGS=800
 
 import { getEventRoundIds, getRoundStandingsV2 } from "./uvsgames.mjs";
-import { eventsNeedingPlacements, upsertPlacement, transaction } from "./db.mjs";
+import { eventsNeedingPlacements, officialEventsToRefresh, upsertPlacement, transaction } from "./db.mjs";
+import { ORGANIZER_STORE_IDS } from "./scopes.mjs";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
 const NICK_FILE = "data/nicknames-resolved.json";
@@ -26,8 +27,14 @@ function isRealNickname(nick, realName) {
   return true;
 }
 
-const todo = eventsNeedingPlacements(MAX);
-console.log(`Standings to fetch: ${todo.length} event(s) (cap ${MAX})...`);
+// Official events (RQ/Regional) first and ALWAYS — their top-cut final standings
+// must overwrite any intermediate-phase result; then the never-seen events.
+const seen = new Set();
+const todo = [];
+for (const e of [...officialEventsToRefresh(ORGANIZER_STORE_IDS, 300), ...eventsNeedingPlacements(MAX)]) {
+  if (!seen.has(e.id)) { seen.add(e.id); todo.push(e); }
+}
+console.log(`Standings to fetch: ${todo.length} event(s) (incl. ${seen.size} unique)...`);
 
 let placed = 0, nickAdded = 0, failed = 0;
 for (const { id: eventId } of todo) {

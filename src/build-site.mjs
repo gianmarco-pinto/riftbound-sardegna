@@ -92,6 +92,7 @@ for (const p of allPlacements()) {
   (PLACEMENTS[p.eventId] ||= { participants: p.participants, places: {} }).places[p.playerId] = p.rank;
 }
 const palmaresOf = new Map();
+const majorsOf = new Map(); // pid -> [{eventName, date, tier, label, rank, participants}] for tier>=4
 const TIER_MULT = { 1: 1, 2: 2, 3: 3, 4: 5, 5: 8 };
 const placePts = (rank) => (rank === 1 ? 10 : rank === 2 ? 6 : rank === 3 ? 4 : 1);
 const raceCutoff = Date.now() - 365 * 24 * 3600e3;
@@ -107,6 +108,15 @@ for (const [eid, info] of Object.entries(PLACEMENTS)) {
       let t = byTier.get(ev.tier);
       if (!t) { t = { first: 0, second: 0, third: 0 }; byTier.set(ev.tier, t); }
       if (rank === 1) t.first++; else if (rank === 2) t.second++; else t.third++;
+    }
+    // Majors (Regional Qualifier / Regional): record the exact finish, podium
+    // or not — finishing 32nd of 1719 at an RQ is a real achievement.
+    if (ev.tier >= 4) {
+      let arr = majorsOf.get(pid);
+      if (!arr) { arr = []; majorsOf.set(pid, arr); }
+      // participants = real placement rows (deduped by PK), not the stored
+      // `participants` column which an old paging bug inflated on a few majors.
+      arr.push({ eventName: ev.name, date: ev.date, tier: ev.tier, label: ev.tierLabel, rank, participants: Object.keys(info.places).length });
     }
     if (inRace) {
       let r = raceOf.get(pid);
@@ -167,6 +177,8 @@ const players = ratingRows.map((p) => {
     palmares: [...(palmaresOf.get(String(p.id)) || new Map())]
       .sort((a, b) => b[0] - a[0])
       .map(([tier, c]) => ({ tier, label: TIERS[tier], ...c })),
+    majors: (majorsOf.get(String(p.id)) || [])
+      .sort((a, b) => b.tier - a.tier || a.rank - b.rank),
     race: raceOf.get(String(p.id)) || { points: 0, events: 0, first: 0, second: 0, third: 0 },
   };
 });

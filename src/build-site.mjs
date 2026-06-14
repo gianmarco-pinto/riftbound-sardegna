@@ -285,9 +285,17 @@ writeFileSync("site/leaderboards/index.json", JSON.stringify({
 console.log(`leaderboards: ${scopeMeta.length} scopes (${countries.length} countries, ${continents.length} continents)`);
 
 // --- 3) per-player profile shards ---
+// PROFILE_SCOPES (e.g. "it") limits which profiles are (re)generated, so the
+// worldwide backfill doesn't republish all ~94k profiles every run — only the
+// live scopes stay fresh; the full set is generated once PROFILE_SCOPES is
+// cleared (backfill done). Leaderboards above always cover everyone.
+const PROFILE_SCOPES = (process.env.PROFILE_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+const profilePlayers = PROFILE_SCOPES.length
+  ? publicPlayers.filter((p) => p.scopes.some((sc) => PROFILE_SCOPES.includes(sc)))
+  : publicPlayers;
 rmSync("site/players", { recursive: true, force: true });
 mkdirSync("site/players", { recursive: true });
-for (const p of publicPlayers) {
+for (const p of profilePlayers) {
   const ms = (matchesByPlayer.get(p.id) || []).slice()
     .sort((x, y) => String(y.date).localeCompare(String(x.date)))
     .map((m) => {
@@ -302,4 +310,4 @@ for (const p of publicPlayers) {
     .sort((a, b) => scopeWeight(a.scope) - scopeWeight(b.scope) || a.scope.localeCompare(b.scope));
   writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, positions, matches: ms }));
 }
-console.log(`players: ${publicPlayers.length} profile shards`);
+console.log(`players: ${profilePlayers.length} profile shards${PROFILE_SCOPES.length ? ` (scopes ${PROFILE_SCOPES.join(",")}; full set ${publicPlayers.length})` : ""}`);

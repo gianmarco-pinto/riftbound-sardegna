@@ -137,24 +137,49 @@ for (const [eid, info] of Object.entries(PLACEMENTS)) {
 }
 
 // --- per-player scopes + matches ---
+// Nationality is the player's HOME country: the country where they played the
+// most tournaments (tie-break: more matches, then most recent). A player shows
+// ONLY in their home country + that continent + Global — visiting an event
+// abroad no longer drops them into that country's board. Exception: anyone who
+// has played in Sardinia also appears in Sardegna AND Italy (the project core).
 const matchesByPlayer = new Map();
-const scopesOf = new Map(); // pid -> Set of scope keys
-const addScope = (pid, key) => {
-  if (!key) return;
-  let s = scopesOf.get(pid);
-  if (!s) { s = new Set(); scopesOf.set(pid, s); }
-  s.add(key);
-};
+const geoOf = new Map(); // pid -> { byCountry: Map(cc -> {events:Set, games, last}), sardegna }
 for (const m of matchRows) {
   const ev = events[m.eventId] || {};
+  const cc = (ev.country || "").toUpperCase();
   for (const pid of [m.a, m.b]) {
     let arr = matchesByPlayer.get(pid);
     if (!arr) { arr = []; matchesByPlayer.set(pid, arr); }
     arr.push(m);
-    if (ev.region === "Sardegna") addScope(pid, "sardegna");
-    if (ev.country) addScope(pid, ev.country.toLowerCase());
-    if (ev.continent) addScope(pid, ev.continent.toLowerCase());
+    let g = geoOf.get(pid);
+    if (!g) { g = { byCountry: new Map(), sardegna: false }; geoOf.set(pid, g); }
+    if (cc) {
+      let c = g.byCountry.get(cc);
+      if (!c) { c = { events: new Set(), games: 0, last: "" }; g.byCountry.set(cc, c); }
+      c.events.add(m.eventId); c.games++;
+      if ((ev.date || "") > c.last) c.last = ev.date || "";
+    }
+    if (ev.region === "Sardegna") g.sardegna = true;
   }
+}
+const scopesOf = new Map(); // pid -> Set of scope keys
+for (const [pid, g] of geoOf) {
+  const scopes = new Set(["global"]);
+  let home = null, best = null;
+  for (const [cc, c] of g.byCountry) {
+    const k = [c.events.size, c.games, c.last];
+    const better = !best || k[0] > best[0] ||
+      (k[0] === best[0] && k[1] > best[1]) ||
+      (k[0] === best[0] && k[1] === best[1] && k[2] > best[2]);
+    if (better) { best = k; home = cc; }
+  }
+  if (home) {
+    scopes.add(home.toLowerCase());
+    const cont = continentOf(home);
+    if (cont) scopes.add(cont.toLowerCase());
+  }
+  if (g.sardegna) { scopes.add("sardegna"); scopes.add("it"); scopes.add("eu"); }
+  scopesOf.set(pid, scopes);
 }
 
 // --- build full player objects ---

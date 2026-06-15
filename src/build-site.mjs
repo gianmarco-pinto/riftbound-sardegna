@@ -279,6 +279,12 @@ const lbRow = (p) => ({
 rmSync("site/leaderboards", { recursive: true, force: true });
 mkdirSync("site/leaderboards", { recursive: true });
 const scopeMeta = [];
+// Players appearing in ANY leaderboard shard: these are the only ones a visitor
+// can click/search to open a profile, so their profile shards must always be
+// regenerated — even during the backfill (PROFILE_SCOPES) — or the board and the
+// profile drift apart (e.g. board shows a player as ranked while their stale
+// profile still says "provisional").
+const leaderboardIds = new Set();
 // Big scopes are capped: a worldwide board would be a 10MB+ download. Profiles
 // and positions still cover EVERY player; the shard just lists the top rows.
 const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 2000);
@@ -286,6 +292,7 @@ for (const scope of allScopes) {
   const all = (scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope)));
   if (!all.length) continue;
   const rows = all.slice(0, MAX_ROWS).map(lbRow);
+  for (const r of rows) leaderboardIds.add(r.id);
   writeFileSync(`site/leaderboards/${scope}.json`,
     JSON.stringify({ scope, generatedAt: new Date().toISOString(), totalPlayers: all.length, players: rows }));
   scopeMeta.push({ scope, players: all.length });
@@ -316,7 +323,9 @@ console.log(`leaderboards: ${scopeMeta.length} scopes (${countries.length} count
 // cleared (backfill done). Leaderboards above always cover everyone.
 const PROFILE_SCOPES = (process.env.PROFILE_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
 const profilePlayers = PROFILE_SCOPES.length
-  ? publicPlayers.filter((p) => p.scopes.some((sc) => PROFILE_SCOPES.includes(sc)))
+  // always include everyone shown on a leaderboard (clickable/searchable) so the
+  // board and the profile never disagree, plus the configured scopes.
+  ? publicPlayers.filter((p) => leaderboardIds.has(p.id) || p.scopes.some((sc) => PROFILE_SCOPES.includes(sc)))
   : publicPlayers;
 rmSync("site/players", { recursive: true, force: true });
 mkdirSync("site/players", { recursive: true });

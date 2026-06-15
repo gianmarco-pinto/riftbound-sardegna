@@ -354,3 +354,12 @@ for (const p of profilePlayers) {
   writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, positions, matches: ms }));
 }
 console.log(`players: ${profilePlayers.length} profile shards${PROFILE_SCOPES.length ? ` (scopes ${PROFILE_SCOPES.join(",")}; full set ${publicPlayers.length})` : ""}`);
+
+// --- 4) search index: EVERY player with a profile shard (compact), so the
+// search box finds anyone by nickname — the leaderboards are capped at the top
+// rows, so without this a player ranked below the cap can't be found at all.
+writeFileSync("site/leaderboards/search.json", JSON.stringify({
+  generatedAt: new Date().toISOString(),
+  players: profilePlayers.map((p) => ({ i: p.id, h: p.handle, r: p.rating, g: p.games, pr: p.provisional ? 1 : 0 })),
+}));
+console.log(`search index: ${profilePlayers.length} players`);

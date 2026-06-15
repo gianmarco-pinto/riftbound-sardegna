@@ -11,6 +11,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
+import { ORGANIZER_STORE_IDS } from "./scopes.mjs";
 
 mkdirSync("data", { recursive: true });
 
@@ -130,10 +131,18 @@ export const markIngested = (id) =>
 export const pendingEvents = (countries, limit) => {
   const worldwide = countries.length === 1 && countries[0] === "*";
   const gate = worldwide ? "" : `AND country IN (${countries.map(() => "?").join(",")})`;
+  // Official-organizer events (RQ/Regional + their side events) first — these are
+  // the high-value, low-count events that must enter the rankings ASAP, before the
+  // long tail of local tournaments. Then Italy (already-live scope), then oldest.
+  const official = ORGANIZER_STORE_IDS.length ? ORGANIZER_STORE_IDS.join(",") : "-1";
   return db.prepare(`
     SELECT id, name, date, country, region FROM events
     WHERE ingested_at IS NULL AND date < ? ${gate}
-    ORDER BY CASE WHEN country = 'IT' THEN 0 ELSE 1 END, date ASC LIMIT ?`)
+    ORDER BY
+      CASE WHEN store_id IN (${official}) THEN 0 ELSE 1 END,
+      CASE WHEN country = 'IT' THEN 0 ELSE 1 END,
+      date ASC
+    LIMIT ?`)
     .all(new Date().toISOString(), ...(worldwide ? [] : countries), limit);
 };
 

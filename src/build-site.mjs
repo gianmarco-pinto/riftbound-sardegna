@@ -106,8 +106,12 @@ const majorsOf = new Map(); // pid -> [{eventName, date, tier, label, rank, part
 // exist (e.g. an 860-player RQ side event would otherwise count as a tiny Nexus).
 // Official RQ/Regional get a prestige bonus on top; tier is still used for the
 // palmares/medals, where the exact official name matters.
-const RACE_PRESTIGE = { 4: 1.5, 5: 2 };                  // RQ ×1.5, Regional ×2, else ×1
-const RACE_FLOOR = { 1: 5, 2: 5, 3: 10, 4: 50, 5: 100 }; // fixed participation points by tier
+const RACE_PRESTIGE = { 4: 1.5, 5: 2 };  // RQ ×1.5, Regional ×2, else ×1
+// Symbolic "you played" floor — purely placement-driven otherwise. A fixed
+// per-tier floor (RQ=50) was wrong: just attending a 1645-player RQ beat WINNING
+// a small Nexus. Mere participation must never outweigh a real result, so the
+// floor is a token 1 point; real points come from beating opponents (placeFactor).
+const RACE_FLOOR = 1;
 // Top-heavy decay by finishing position relative to field size: 1st → 1.0, last → ~0.
 const placeFactor = (rank, n) => Math.max(0, 1 - Math.log(rank) / Math.log(n + 1));
 const raceCutoff = Date.now() - 365 * 24 * 3600e3;
@@ -138,7 +142,7 @@ for (const [eid, info] of Object.entries(PLACEMENTS)) {
       let r = raceOf.get(pid);
       if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0 }; raceOf.set(pid, r); }
       r.points += Math.round(
-        Math.max(RACE_FLOOR[ev.tier] || 5, fieldSize * placeFactor(rank, fieldSize) * (RACE_PRESTIGE[ev.tier] || 1)));
+        Math.max(RACE_FLOOR, fieldSize * placeFactor(rank, fieldSize) * (RACE_PRESTIGE[ev.tier] || 1)));
       r.events++;
       if (rank === 1) r.first++; else if (rank === 2) r.second++; else if (rank === 3) r.third++;
     }

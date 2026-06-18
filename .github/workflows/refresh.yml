@@ -81,3 +81,22 @@ jobs:
         run: |
           gh release view state >/dev/null 2>&1 || gh release create state --title "pipeline state" --notes "SQLite DB and caches persisted between refresh runs. Machine-managed." --latest=false
           gh release upload state data/riftbound.db data/nicknames-resolved.json data/publish-manifest.json --clobber
+      # GitHub's scheduled cron is best-effort and silently skips firings under
+      # load, which can stall a backfill for hours. While a large backlog remains,
+      # re-trigger the next run ourselves so progress never depends on the cron.
+      # Requires a WORKFLOW_PAT secret (Actions: read+write) — GITHUB_TOKEN cannot
+      # re-trigger workflows. If the secret is absent the step is a no-op.
+      - name: Self-chain while backfill is incomplete
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "WORKFLOW_PAT not set — self-chain disabled (relying on cron)"; exit 0; fi
+          PENDING=$(node -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync('data/riftbound.db');console.log(db.prepare('SELECT COUNT(*) c FROM events WHERE ingested_at IS NULL AND date < ?').get(new Date().toISOString()).c);}).catch(()=>console.log(0))")
+          echo "pending past events: $PENDING"
+          if [ "${PENDING:-0}" -gt 1500 ]; then
+            echo "backlog > 1500 → re-triggering next run (cron-independent)"
+            gh workflow run refresh.yml -f max_events=6000
+          else
+            echo "backlog drained (<=1500) → leaving incremental updates to the schedule"
+          fi

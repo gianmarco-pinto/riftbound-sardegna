@@ -48,7 +48,7 @@ jobs:
       DISCOVER_LOOKBACK_DAYS: ${{ vars.DISCOVER_LOOKBACK_DAYS || '' }}
       INGEST_COUNTRIES: ${{ github.event.inputs.countries || vars.INGEST_COUNTRIES || 'IT' }}
       MAX_EVENTS: ${{ github.event.inputs.max_events || vars.MAX_EVENTS || '800' }}
-      MAX_STANDINGS: ${{ github.event.inputs.max_events || vars.MAX_EVENTS || '800' }}
+      MAX_STANDINGS: ${{ vars.MAX_STANDINGS || '6000' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -112,7 +112,7 @@ jobs:
           echo "pending past events: $PENDING"
           if [ "${PENDING:-0}" -gt 1500 ]; then
             echo "backlog > 1500 → re-triggering next run (cron-independent)"
-            gh workflow run refresh.yml -f max_events=6000
+            gh workflow run refresh.yml -f max_events=12000
           else
             echo "backlog drained (<=1500) → leaving incremental updates to the schedule"
           fi

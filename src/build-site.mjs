@@ -359,11 +359,13 @@ for (const p of profilePlayers) {
 }
 console.log(`players: ${profilePlayers.length} profile shards${PROFILE_SCOPES.length ? ` (scopes ${PROFILE_SCOPES.join(",")}; full set ${publicPlayers.length})` : ""}`);
 
-// --- 4) search index: EVERY player with a profile shard (compact), so the
-// search box finds anyone by nickname — the leaderboards are capped at the top
-// rows, so without this a player ranked below the cap can't be found at all.
+// --- 4) search index: ALWAYS the full player set (compact id+handle), decoupled
+// from profile-shard generation. The leaderboards are capped at the top rows, so
+// without this a player below the cap can't be found at all. It's cheap (~30 B/row)
+// so we publish it every run even though heavy profile shards are regenerated on a
+// lighter cadence (PROFILE_SCOPES) — search must find anyone, all the time.
 writeFileSync("site/leaderboards/search.json", JSON.stringify({
   generatedAt: new Date().toISOString(),
-  players: profilePlayers.map((p) => ({ i: p.id, h: p.handle, r: p.rating, g: p.games, pr: p.provisional ? 1 : 0 })),
+  players: publicPlayers.map((p) => ({ i: p.id, h: p.handle, r: p.rating, g: p.games, pr: p.provisional ? 1 : 0 })),
 }));
-console.log(`search index: ${profilePlayers.length} players`);
+console.log(`search index: ${publicPlayers.length} players (full set)`);

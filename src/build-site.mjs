@@ -203,7 +203,14 @@ for (const [pid, g] of geoOf) {
 //    schedule) >= MIN_SOS, so a big fish in a weak local pond doesn't outrank
 //    players who beat genuinely strong fields. Country/Sardegna boards keep all.
 const MIN_OPPONENTS = 25;
-const MIN_SOS = 1620;
+// Strength-of-schedule floor for the GLOBAL/continental boards. avgOpp is the
+// mean of opponents' CURRENT ratings, anchored near the 1500 population mean
+// (even elites play ~1500 swiss-round opponents), so its spread is compressed:
+// across the ~38.7k non-provisional worldwide players the 95th pct is ~1580 and
+// the max ~1719. 1620 left only 356 on the global board (>99th pct) — far too
+// strict. 1560 (~88th pct) keeps ~4.5k well-connected players, filling the 5k
+// shard with a credible worldwide elite. Tunable.
+const MIN_SOS = 1560;
 const CONT_KEYS = new Set(Object.keys(CONTINENT_LABELS).map((k) => k.toLowerCase()));
 
 const players = ratingRows.map((p) => {

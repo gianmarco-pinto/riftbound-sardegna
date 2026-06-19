@@ -320,7 +320,7 @@ const scopeMeta = [];
 const leaderboardIds = new Set();
 // Big scopes are capped: a worldwide board would be a 10MB+ download. Profiles
 // and positions still cover EVERY player; the shard just lists the top rows.
-const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 2000);
+const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 5000);
 for (const scope of allScopes) {
   const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
   // Global & continental boards: keep only players with a connected/strong-enough

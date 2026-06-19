@@ -1,0 +1,14 @@
+{
+  "version": "5",
+  "remote": {
+    "https://esm.sh/@resvg/resvg-wasm@2.6.2": "0657db3e6d5f5b08b63e93c566b7ea08569c5f895188c13b27dd495908e7e3df",
+    "https://esm.sh/@resvg/resvg-wasm@2.6.2/denonext/resvg-wasm.mjs": "206e2ea8a8f0534dceb64a02e9c8f09c060919326cb96f8eab533c3e97564f52"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:glicko2@^1.2.1"
+      ]
+    }
+  }
+}

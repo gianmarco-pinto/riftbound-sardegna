@@ -196,11 +196,28 @@ for (const [pid, g] of geoOf) {
 }
 
 // --- build full player objects ---
+// Connectivity / cross-pool calibration thresholds:
+//  - fewer than MIN_OPPONENTS distinct opponents → rating is a tiny-clique
+//    artifact → provisional (hidden by default everywhere);
+//  - global & continental boards require avg opponent rating (strength of
+//    schedule) >= MIN_SOS, so a big fish in a weak local pond doesn't outrank
+//    players who beat genuinely strong fields. Country/Sardegna boards keep all.
+const MIN_OPPONENTS = 25;
+const MIN_SOS = 1620;
+const CONT_KEYS = new Set(Object.keys(CONTINENT_LABELS).map((k) => k.toLowerCase()));
+
 const players = ratingRows.map((p) => {
   let bestWin = null, worstLoss = null;
+  const oppSet = new Set();
+  let oppSum = 0, oppN = 0;
   for (const m of matchesByPlayer.get(p.id) || []) {
     const meA = m.a === p.id;
     const oppId = meA ? m.b : m.a;
+    if (oppId != null) {
+      oppSet.add(oppId);
+      const oppCur = ratingMap.get(oppId)?.rating;
+      if (oppCur != null) { oppSum += oppCur; oppN++; }
+    }
     const won = (m.winner === "A" && meA) || (m.winner === "B" && !meA);
     const lost = (m.winner === "A" && !meA) || (m.winner === "B" && meA);
     const oppRating = snapAt.get(`${oppId}:${m.eventId}`);
@@ -210,12 +227,14 @@ const players = ratingRows.map((p) => {
     if (won && (!bestWin || oppRating > bestWin.oppRating)) bestWin = rec;
     if (lost && (!worstLoss || oppRating < worstLoss.oppRating)) worstLoss = rec;
   }
+  const avgOpp = oppN ? Math.round(oppSum / oppN) : 0;
+  const provisional = !!p.provisional || oppSet.size < MIN_OPPONENTS;
   return {
     id: p.id,
     handle: handleOf(p.handle, p.id),
     rating: p.rating, rd: p.rd, vol: p.vol,
     games: p.games, wins: p.wins, losses: p.losses, draws: p.draws,
-    provisional: !!p.provisional, lastDate: p.lastDate,
+    provisional, avgOpp, lastDate: p.lastDate,
     regions: [...(scopesOf.get(p.id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
     scopes: [...(scopesOf.get(p.id) || [])],
     series: seriesOf.get(p.id) || [],
@@ -247,7 +266,9 @@ for (const scope of allScopes) {
   // Chess-style rule: provisional ratings are UNRANKED — the official ELO rank
   // counts established players only (keeps leaderboard and profile consistent
   // under any min-games filter).
-  const ranked = inScope.filter((p) => !p.provisional); // rating-sorted already
+  // Global & continental ELO ranks require a strong-enough schedule (connectivity).
+  const globalGate = scope === "global" || CONT_KEYS.has(scope);
+  const ranked = inScope.filter((p) => !p.provisional && (!globalGate || p.avgOpp >= MIN_SOS)); // rating-sorted already
   const eloRank = new Map(ranked.map((p, i) => [p.id, i + 1]));
   const byRace = inScope.filter((p) => p.race.points > 0)
     .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
@@ -259,7 +280,6 @@ for (const scope of allScopes) {
   });
 }
 // display order: Sardegna, countries, continents, global
-const CONT_KEYS = new Set(Object.keys(CONTINENT_LABELS).map((k) => k.toLowerCase()));
 const scopeWeight = (s) => (s === "sardegna" ? 0 : s === "global" ? 3 : CONT_KEYS.has(s) ? 2 : 1);
 
 mkdirSync("site", { recursive: true });
@@ -302,7 +322,10 @@ const leaderboardIds = new Set();
 // and positions still cover EVERY player; the shard just lists the top rows.
 const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 2000);
 for (const scope of allScopes) {
-  const all = (scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope)));
+  const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
+  // Global & continental boards: keep only players with a connected/strong-enough
+  // schedule (avg opponent rating). Country/Sardegna boards keep everyone.
+  const all = (scope === "global" || CONT_KEYS.has(scope)) ? inScope.filter((p) => p.avgOpp >= MIN_SOS) : inScope;
   if (!all.length) continue;
   const rows = all.slice(0, MAX_ROWS).map(lbRow);
   for (const r of rows) leaderboardIds.add(r.id);

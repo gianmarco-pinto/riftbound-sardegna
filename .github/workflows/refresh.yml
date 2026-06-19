@@ -102,7 +102,13 @@ jobs:
       # re-trigger the next run ourselves so progress never depends on the cron.
       # Requires a WORKFLOW_PAT secret (Actions: read+write) — GITHUB_TOKEN cannot
       # re-trigger workflows. If the secret is absent the step is a no-op.
-      - name: Self-chain while backfill is incomplete
+      # Self-chain only for a GENUINE large backlog. Steady state keeps ~6k recent
+      # events pending by design (they have no published results yet and are retried
+      # for up to GIVE_UP_DAYS), so the threshold sits above that buffer — otherwise
+      # the chain would loop forever doing ~nothing. Normal incremental updates ride
+      # the 2h cron; the chain only kicks in after a big drop-in (e.g. a tournament
+      # weekend dumps thousands of new events at once).
+      - name: Self-chain while a large backlog remains
         if: always()
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
@@ -110,9 +116,9 @@ jobs:
           if [ -z "$GH_TOKEN" ]; then echo "WORKFLOW_PAT not set — self-chain disabled (relying on cron)"; exit 0; fi
           PENDING=$(node -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync('data/riftbound.db');console.log(db.prepare('SELECT COUNT(*) c FROM events WHERE ingested_at IS NULL AND date < ?').get(new Date().toISOString()).c);}).catch(()=>console.log(0))")
           echo "pending past events: $PENDING"
-          if [ "${PENDING:-0}" -gt 1500 ]; then
-            echo "backlog > 1500 → re-triggering next run (cron-independent)"
+          if [ "${PENDING:-0}" -gt 8000 ]; then
+            echo "large backlog (> 8000) → re-triggering next run (cron-independent)"
             gh workflow run refresh.yml -f max_events=12000
           else
-            echo "backlog drained (<=1500) → leaving incremental updates to the schedule"
+            echo "no large backlog (<= 8000) → leaving incremental updates to the 2h schedule"
           fi

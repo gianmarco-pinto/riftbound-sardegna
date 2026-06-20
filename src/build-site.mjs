@@ -422,17 +422,34 @@ const profilePlayers = PROFILE_SCOPES.length
   ? publicPlayers.filter((p) => leaderboardIds.has(p.id) || p.scopes.some((sc) => PROFILE_SCOPES.includes(sc)))
   : publicPlayers;
 // Per-player EVENT RESULTS (placement + record per tournament) — the profile's
-// PRIMARY list now that match-by-match pairings are frozen (UVS lockdown). Built
-// from the public registrations data in `placements`.
+// PRIMARY list now that match-by-match pairings are frozen (UVS lockdown).
+// Placement comes from `placements`; the W/L/D record comes from the registrations
+// data (new events) OR — for historical events — is DERIVED from the exact `matches`
+// we already have (no need to re-fetch: count W/L/D per player per event).
+const recOf = new Map(); // `${pid}:${eid}` -> {w,l,d}
+for (const m of matchRows) {
+  for (const pid of [m.a, m.b]) {
+    if (pid == null) continue;
+    const k = `${pid}:${m.eventId}`;
+    let r = recOf.get(k);
+    if (!r) { r = { w: 0, l: 0, d: 0 }; recOf.set(k, r); }
+    const meA = m.a === pid;
+    if (m.winner === "draw") r.d++;
+    else if ((m.winner === "A" && meA) || (m.winner === "B" && !meA)) r.w++;
+    else r.l++;
+  }
+}
 const resultsByPlayer = new Map();
 for (const r of db.prepare("SELECT player_id pid, event_id eid, rank, participants, wins, losses, draws FROM placements").all()) {
   const ev = events[r.eid];
   if (!ev) continue;
   let arr = resultsByPlayer.get(String(r.pid));
   if (!arr) { arr = []; resultsByPlayer.set(String(r.pid), arr); }
+  const der = r.wins == null ? recOf.get(`${r.pid}:${r.eid}`) : null; // historical fallback from matches
   arr.push({
     eventId: r.eid, date: ev.date, eventName: ev.name, tier: ev.tier, tierLabel: ev.tierLabel,
-    rank: r.rank, of: r.participants, wins: r.wins, losses: r.losses, draws: r.draws,
+    rank: r.rank, of: r.participants,
+    wins: r.wins ?? der?.w ?? null, losses: r.losses ?? der?.l ?? null, draws: r.draws ?? der?.d ?? null,
   });
 }
 

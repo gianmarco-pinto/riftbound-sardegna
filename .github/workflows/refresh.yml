@@ -71,6 +71,9 @@ jobs:
       # 403) ~2026-06-19. No token needed. Historical exact pairings stay frozen but intact.
       - name: Ingest results (registrations)
         run: node src/ingest-registrations.mjs
+      - name: Probe — did UVS reopen exact pairings?
+        run: node src/probe-pairings.mjs
+        continue-on-error: true
       # Legacy pairing ingest + round-standings are kept in the repo (frozen) in case
       # UVS reopens get_all_rounds; not run anymore (they 403).
       - name: Compute ratings

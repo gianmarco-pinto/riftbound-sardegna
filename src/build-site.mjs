@@ -421,6 +421,21 @@ const profilePlayers = PROFILE_SCOPES.length
   // board and the profile never disagree, plus the configured scopes.
   ? publicPlayers.filter((p) => leaderboardIds.has(p.id) || p.scopes.some((sc) => PROFILE_SCOPES.includes(sc)))
   : publicPlayers;
+// Per-player EVENT RESULTS (placement + record per tournament) — the profile's
+// PRIMARY list now that match-by-match pairings are frozen (UVS lockdown). Built
+// from the public registrations data in `placements`.
+const resultsByPlayer = new Map();
+for (const r of db.prepare("SELECT player_id pid, event_id eid, rank, participants, wins, losses, draws FROM placements").all()) {
+  const ev = events[r.eid];
+  if (!ev) continue;
+  let arr = resultsByPlayer.get(String(r.pid));
+  if (!arr) { arr = []; resultsByPlayer.set(String(r.pid), arr); }
+  arr.push({
+    eventId: r.eid, date: ev.date, eventName: ev.name, tier: ev.tier, tierLabel: ev.tierLabel,
+    rank: r.rank, of: r.participants, wins: r.wins, losses: r.losses, draws: r.draws,
+  });
+}
+
 rmSync("site/players", { recursive: true, force: true });
 mkdirSync("site/players", { recursive: true });
 for (const p of profilePlayers) {
@@ -436,7 +451,11 @@ for (const p of profilePlayers) {
     });
   const positions = (positionsOf.get(p.id) || []).slice()
     .sort((a, b) => scopeWeight(a.scope) - scopeWeight(b.scope) || a.scope.localeCompare(b.scope));
-  writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, positions, matches: ms }));
+  const results = (resultsByPlayer.get(String(p.id)) || []).slice()
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  // `results` = the new primary list (events + placements). `matches` = frozen
+  // exact head-to-head (the "Classic" era, up to the UVS lockdown).
+  writeFileSync(`site/players/${p.id}.json`, JSON.stringify({ ...p, positions, results, matches: ms }));
 }
 console.log(`players: ${profilePlayers.length} profile shards${PROFILE_SCOPES.length ? ` (scopes ${PROFILE_SCOPES.join(",")}; full set ${publicPlayers.length})` : ""}`);
 

@@ -144,8 +144,7 @@ function shareHtml(id: string, p: any, origin: string) {
 <meta property="og:url" content="${profileUrl}"><meta property="og:image" content="${ogImg}">
 <meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${esc(title)}">
-<meta name="twitter:description" content="${esc(desc)}"><meta name="twitter:image" content="${ogImg}">
-<meta http-equiv="refresh" content="0; url=${esc(profileUrl)}"></head>
+<meta name="twitter:description" content="${esc(desc)}"><meta name="twitter:image" content="${ogImg}"></head>
 <body style="background:#0b0c12;color:#f1eee6;font-family:sans-serif"><script>location.replace(${JSON.stringify(profileUrl)})</script>
 <p><a href="${esc(profileUrl)}" style="color:#5b8cff">View ${esc(handle)} on Riftladder →</a></p></body></html>`;
 }

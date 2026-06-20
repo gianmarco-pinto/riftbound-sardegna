@@ -175,6 +175,25 @@ for (const m of matchRows) {
     if (ev.region === "Sardegna") g.sardegna = true;
   }
 }
+// Registration-only events (post-2026-06-19 UVS pairing lockdown) have NO matches;
+// players link to them via PLACEMENTS (public registrations endpoint). Fold those
+// links into geo so those players still get country/Sardegna/continent scopes.
+for (const [eid, info] of Object.entries(PLACEMENTS)) {
+  const ev = events[eid] || {};
+  const cc = (ev.country || "").toUpperCase();
+  for (const pid of Object.keys(info.places)) {
+    let g = geoOf.get(pid);
+    if (!g) { g = { byCountry: new Map(), sardegna: false }; geoOf.set(pid, g); }
+    if (cc) {
+      let c = g.byCountry.get(cc);
+      if (!c) { c = { events: new Set(), games: 0, last: "" }; g.byCountry.set(cc, c); }
+      c.events.add(Number(eid));
+      if ((ev.date || "") > c.last) c.last = ev.date || "";
+    }
+    if (ev.region === "Sardegna") g.sardegna = true;
+  }
+}
+
 const scopesOf = new Map(); // pid -> Set of scope keys
 for (const [pid, g] of geoOf) {
   const scopes = new Set(["global"]);
@@ -212,6 +231,17 @@ const MIN_OPPONENTS = 25;
 // shard with a credible worldwide elite. Tunable.
 const MIN_SOS = 1560;
 const CONT_KEYS = new Set(Object.keys(CONTINENT_LABELS).map((k) => k.toLowerCase()));
+
+// Handles + records for players who exist ONLY via placements (no match-based
+// rating). Their W/L/D comes from the registrations endpoint (stored on placements).
+const handleById = new Map(db.prepare("SELECT id, handle FROM players").all().map((r) => [String(r.id), r.handle]));
+const placeRecord = new Map(); // pid -> {w,l,d,last}
+for (const pr of db.prepare("SELECT pl.player_id pid, pl.wins w, pl.losses l, pl.draws d, e.date date FROM placements pl JOIN events e ON e.id = pl.event_id WHERE pl.wins IS NOT NULL").all()) {
+  let r = placeRecord.get(String(pr.pid));
+  if (!r) { r = { w: 0, l: 0, d: 0, last: "" }; placeRecord.set(String(pr.pid), r); }
+  r.w += pr.w || 0; r.l += pr.l || 0; r.d += pr.d || 0;
+  if ((pr.date || "") > r.last) r.last = pr.date || "";
+}
 
 const players = ratingRows.map((p) => {
   let bestWin = null, worstLoss = null;
@@ -254,7 +284,28 @@ const players = ratingRows.map((p) => {
     race: raceOf.get(String(p.id)) || { points: 0, events: 0, first: 0, second: 0, third: 0 },
   };
 });
-players.sort((a, b) => b.rating - a.rating);
+// Append registration-only players (placements/Race but no match-based rating):
+// unranked ELO (provisional, no pairings) but full Race/standings presence.
+const ratedIds = new Set(ratingRows.map((r) => String(r.id)));
+for (const id of raceOf.keys()) {
+  if (ratedIds.has(String(id))) continue;
+  const rec = placeRecord.get(String(id)) || { w: 0, l: 0, d: 0, last: "" };
+  players.push({
+    id,
+    handle: handleOf(handleById.get(String(id)), id),
+    rating: null, rd: null, vol: null,
+    games: rec.w + rec.l + rec.d, wins: rec.w, losses: rec.l, draws: rec.d,
+    provisional: true, avgOpp: 0, lastDate: rec.last,
+    regions: [...(scopesOf.get(id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
+    scopes: [...(scopesOf.get(id) || [])],
+    series: [], bestWin: null, worstLoss: null,
+    palmares: [...(palmaresOf.get(String(id)) || new Map())].sort((a, b) => b[0] - a[0]).map(([tier, c]) => ({ tier, label: TIERS[tier], ...c })),
+    majors: (majorsOf.get(String(id)) || []).sort((a, b) => b.tier - a.tier || a.rank - b.rank),
+    race: raceOf.get(String(id)) || { points: 0, events: 0, first: 0, second: 0, third: 0 },
+  });
+}
+// Rated first (desc); unranked (null rating) sink to the bottom.
+players.sort((a, b) => (b.rating ?? -Infinity) - (a.rating ?? -Infinity));
 const playerById = new Map(players.map((p) => [p.id, p]));
 
 // Opted-out players are kept in the rating math but never published.

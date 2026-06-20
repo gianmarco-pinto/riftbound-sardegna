@@ -66,10 +66,13 @@ jobs:
           fi
       - name: Discover events
         run: node src/discover.mjs
-      - name: Ingest results (capped)
-        run: node src/ingest.mjs
-      - name: Standings (nicknames + placements)
-        run: node src/resolve-nicknames.mjs
+      # Match RESULTS now come from the PUBLIC registrations endpoint (player records
+      # + final standings), since UVS locked the exact-pairings endpoint (get_all_rounds,
+      # 403) ~2026-06-19. No token needed. Historical exact pairings stay frozen but intact.
+      - name: Ingest results (registrations)
+        run: node src/ingest-registrations.mjs
+      # Legacy pairing ingest + round-standings are kept in the repo (frozen) in case
+      # UVS reopens get_all_rounds; not run anymore (they 403).
       - name: Compute ratings
         run: node src/rate.mjs
       # Heavy full-profile regeneration (~150k shards) runs at most once per ~day;

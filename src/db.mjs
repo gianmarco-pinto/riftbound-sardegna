@@ -94,6 +94,10 @@ CREATE TABLE IF NOT EXISTS placements (
 for (const sql of [
   "ALTER TABLE events ADD COLUMN continent TEXT",
   "ALTER TABLE events ADD COLUMN ingested_at TEXT",
+  // W/L/D from the public registrations endpoint (results without exact pairings)
+  "ALTER TABLE placements ADD COLUMN wins INTEGER",
+  "ALTER TABLE placements ADD COLUMN losses INTEGER",
+  "ALTER TABLE placements ADD COLUMN draws INTEGER",
 ]) { try { db.exec(sql); } catch { /* already there */ } }
 
 // --- prepared upserts ---

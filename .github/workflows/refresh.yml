@@ -41,6 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
+      # build-site holds the whole worldwide dataset in memory (168k players, 141k
+      # event shards, snapshot series); it outgrew Node's ~4GB default heap and
+      # OOM'd (exit 134). The runner has 16GB — give Node 12GB of headroom.
+      NODE_OPTIONS: --max-old-space-size=12288
       GH_TOKEN: ${{ github.token }}
       UVS_TOKEN: ${{ secrets.UVS_TOKEN }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

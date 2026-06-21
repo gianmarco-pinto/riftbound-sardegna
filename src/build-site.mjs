@@ -246,21 +246,25 @@ for (const [pid, g] of geoOf) {
 }
 
 // --- build full player objects ---
-// Connectivity / cross-pool calibration thresholds:
+// Connectivity / cross-pool calibration:
 //  - fewer than MIN_OPPONENTS distinct opponents → rating is a tiny-clique
 //    artifact → provisional (hidden by default everywhere);
-//  - global & continental boards require avg opponent rating (strength of
-//    schedule) >= MIN_SOS, so a big fish in a weak local pond doesn't outrank
-//    players who beat genuinely strong fields. Country/Sardegna boards keep all.
+//  - SOS DEFLATION (replaces the old hard MIN_SOS cutoff, which excluded even
+//    national #1s — e.g. a 1866 player whose avgOpp was 1557): instead of hiding
+//    weakly-connected players, we DISCOUNT a rating by how far its schedule sits
+//    below a globally-competitive anchor, so everyone appears but a big fish from
+//    a weak pond sinks below players who beat genuinely strong fields.
+//      displayed = raw − DEFLATE_K · max(0, SOS_REF − avgOpp)
+//    avgOpp = mean of opponents' CURRENT (raw) ratings. SOS_REF≈ where the
+//    globally-connected elite sit (Alanzq-tier avgOpp ~1680); K tunes severity.
+//    Simulated worldwide: Alanzq (227 opp, avgOpp 1680) → #1; weak-schedule
+//    inflations (e.g. 31-opp/1479-avgOpp 2050s) drop ~10 places; MARTIX (1866,
+//    avgOpp 1557) shows ~1757 and is now RANKED instead of excluded.
 const MIN_OPPONENTS = 25;
-// Strength-of-schedule floor for the GLOBAL/continental boards. avgOpp is the
-// mean of opponents' CURRENT ratings, anchored near the 1500 population mean
-// (even elites play ~1500 swiss-round opponents), so its spread is compressed:
-// across the ~38.7k non-provisional worldwide players the 95th pct is ~1580 and
-// the max ~1719. 1620 left only 356 on the global board (>99th pct) — far too
-// strict. 1560 (~88th pct) keeps ~4.5k well-connected players, filling the 5k
-// shard with a credible worldwide elite. Tunable.
-const MIN_SOS = 1560;
+const SOS_REF = Number(process.env.SOS_REF || 1650);
+const DEFLATE_K = Number(process.env.DEFLATE_K || 0.75);
+const deflateRating = (raw, avgOpp) =>
+  raw == null ? null : Math.round(raw - DEFLATE_K * Math.max(0, SOS_REF - (avgOpp || 0)));
 const CONT_KEYS = new Set(Object.keys(CONTINENT_LABELS).map((k) => k.toLowerCase()));
 
 // Handles + records for players who exist ONLY via placements (no match-based
@@ -300,7 +304,8 @@ const players = ratingRows.map((p) => {
   return {
     id: p.id,
     handle: handleOf(p.handle, p.id),
-    rating: p.rating, rd: p.rd, vol: p.vol,
+    // displayed rating = SOS-deflated (everywhere). raw kept for reference/series.
+    rating: deflateRating(p.rating, avgOpp), ratingRaw: Math.round(p.rating), rd: p.rd, vol: p.vol,
     games: p.games, wins: p.wins, losses: p.losses, draws: p.draws,
     provisional, avgOpp, lastDate: p.lastDate,
     regions: [...(scopesOf.get(p.id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
@@ -352,12 +357,10 @@ const allScopes = new Set(["global", ...publicPlayers.flatMap((p) => p.scopes)])
 const positionsOf = new Map(); // pid -> [{scope, elo, of, race, raceOf}]
 for (const scope of allScopes) {
   const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
-  // Chess-style rule: provisional ratings are UNRANKED — the official ELO rank
-  // counts established players only (keeps leaderboard and profile consistent
-  // under any min-games filter).
-  // Global & continental ELO ranks require a strong-enough schedule (connectivity).
-  const globalGate = scope === "global" || CONT_KEYS.has(scope);
-  const ranked = inScope.filter((p) => !p.provisional && (!globalGate || p.avgOpp >= MIN_SOS)); // rating-sorted already
+  // Chess-style rule: provisional ratings are UNRANKED — the official rank counts
+  // established players only. No SOS gate anymore: weak schedules are handled by
+  // rating deflation (above), so everyone established is ranked, by deflated rating.
+  const ranked = inScope.filter((p) => !p.provisional); // rating-sorted already (deflated)
   const eloRank = new Map(ranked.map((p, i) => [p.id, i + 1]));
   const byRace = inScope.filter((p) => p.race.points > 0)
     .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
@@ -412,27 +415,20 @@ const leaderboardIds = new Set();
 const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 5000);
 for (const scope of allScopes) {
   const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
-  const gated = scope === "global" || CONT_KEYS.has(scope);
-  // RATING board (global/continental): connectivity gate — only players whose
-  // schedule is strong/connected enough (avg opponent rating) earn a rating rank,
-  // so a big rating farmed against weak local opposition can't pollute the world
-  // board. Country/Sardegna boards gate nobody. (inScope is already rating-sorted.)
-  const ratingPool = gated ? inScope.filter((p) => p.avgOpp >= MIN_SOS) : inScope;
-  // CIRCUITO board: placement points are schedule-INDEPENDENT (earned by how far
-  // you finish, regardless of opponents), so the connectivity gate must NOT apply
-  // — a regional champion belongs on the world Circuito board even if their rating
-  // schedule is too local to be rating-ranked.
+  // RATING board: no connectivity gate — weak schedules are deflated, not excluded,
+  // so the pool is everyone in scope (already sorted by deflated rating).
+  const ratingPool = inScope;
+  // CIRCUITO board: ranked by placement points (schedule-independent). Union the top
+  // rows of each pool so registration-only / lower-rated high-Circuit players (who
+  // fall outside the rating top-N) still appear in the Circuito view.
   const racePool = inScope.filter((p) => p.race.points > 0)
     .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
-  // The shard feeds BOTH views, so include the top rows of each (deduped). Each row
-  // carries `rated`: whether it qualifies for THIS scope's rating rank. The frontend
-  // hides non-`rated` rows from the Rating view but keeps them in the Circuito view.
   const seen = new Set();
   const rows = [];
   const push = (p) => {
     if (seen.has(p.id)) return;
     seen.add(p.id);
-    rows.push({ ...lbRow(p), rated: !gated || p.avgOpp >= MIN_SOS });
+    rows.push({ ...lbRow(p), rated: true }); // no SOS exclusion anymore (deflation)
   };
   ratingPool.slice(0, MAX_ROWS).forEach(push);
   racePool.slice(0, MAX_ROWS).forEach(push);

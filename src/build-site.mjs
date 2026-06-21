@@ -106,14 +106,19 @@ const majorsOf = new Map(); // pid -> [{eventName, date, tier, label, rank, part
 // exist (e.g. an 860-player RQ side event would otherwise count as a tiny Nexus).
 // Official RQ/Regional get a prestige bonus on top; tier is still used for the
 // palmares/medals, where the exact official name matters.
-const RACE_PRESTIGE = { 4: 1.5, 5: 2 };  // RQ ×1.5, Regional ×2, else ×1
-// Symbolic "you played" floor — purely placement-driven otherwise. A fixed
-// per-tier floor (RQ=50) was wrong: just attending a 1645-player RQ beat WINNING
-// a small Nexus. Mere participation must never outweigh a real result, so the
-// floor is a token 1 point; real points come from beating opponents (placeFactor).
-const RACE_FLOOR = 1;
-// Top-heavy decay by finishing position relative to field size: 1st → 1.0, last → ~0.
-const placeFactor = (rank, n) => Math.max(0, 1 - Math.log(rank) / Math.log(n + 1));
+// Circuit points (council-redesigned 2026-06-21): reward DEPTH of finish, NOT field
+// size. The old `fieldSize × placeFactor` paid for the denominator — mid/low finishes
+// at big events outscored winning small ones (e.g. 500th/1000 ≈ 100-150 pts vs a
+// 10-player win = 10). Now: a tier base, a gentle log size bonus that only raises the
+// CEILING for good finishes, a placement BRACKET (mid/low = 0, no participation floor),
+// and BEST-N aggregation (not sum) to stop volume/travel farming.
+const TIER_BASE = { 1: 18, 2: 20, 3: 28, 4: 60, 5: 100 }; // RQ=4, Regional=5 (reliably detected); generic ~20
+const RACE_BEST_N = Number(process.env.RACE_BEST_N || 10); // count only the best N events; 0 = sum all
+const placeBracket = (rank, n) =>
+  rank === 1 ? 1.0 : rank <= 4 ? 0.55 : rank <= 8 ? 0.35 : rank <= 16 ? 0.22 : rank <= 32 ? 0.12
+    : rank <= Math.max(8, Math.ceil(0.10 * n)) ? 0.05 : 0;
+const eventPoints = (rank, n, tier) =>
+  Math.round((TIER_BASE[tier] || 20) * Math.min(1.6, 1 + Math.log10(Math.max(1, n)) / 4) * placeBracket(rank, n));
 const raceCutoff = Date.now() - 365 * 24 * 3600e3;
 const raceOf = new Map();
 for (const [eid, info] of Object.entries(PLACEMENTS)) {
@@ -140,13 +145,20 @@ for (const [eid, info] of Object.entries(PLACEMENTS)) {
     }
     if (inRace) {
       let r = raceOf.get(pid);
-      if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0 }; raceOf.set(pid, r); }
-      r.points += Math.round(
-        Math.max(RACE_FLOOR, fieldSize * placeFactor(rank, fieldSize) * (RACE_PRESTIGE[ev.tier] || 1)));
+      if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0, _evt: [] }; raceOf.set(pid, r); }
+      const pts = eventPoints(rank, fieldSize, ev.tier);
+      if (pts > 0) r._evt.push(pts);
       r.events++;
       if (rank === 1) r.first++; else if (rank === 2) r.second++; else if (rank === 3) r.third++;
     }
   }
+}
+// Aggregate Circuit points = best-N events (or sum if RACE_BEST_N=0).
+for (const r of raceOf.values()) {
+  r._evt.sort((a, b) => b - a);
+  const counted = RACE_BEST_N > 0 ? r._evt.slice(0, RACE_BEST_N) : r._evt;
+  r.points = counted.reduce((s, x) => s + x, 0);
+  delete r._evt;
 }
 
 // --- per-player scopes + matches ---

@@ -476,6 +476,36 @@ for (const p of profilePlayers) {
 }
 console.log(`players: ${profilePlayers.length} profile shards${PROFILE_SCOPES.length ? ` (scopes ${PROFILE_SCOPES.join(",")}; full set ${publicPlayers.length})` : ""}`);
 
+// --- 3b) per-tournament shards: full final standings (placement + record), so a
+// result row on a profile is clickable → the tournament's complete ranking, each
+// player clickable. W/L/D from registrations (new events) or derived from matches.
+const handleOfId = new Map(publicPlayers.map((p) => [String(p.id), p.handle]));
+const standByEvent = new Map(); // eid -> { part, rows:[] }
+for (const r of db.prepare("SELECT event_id eid, player_id pid, rank, participants, wins, losses, draws FROM placements").all()) {
+  const pid = String(r.pid);
+  if (!handleOfId.has(pid)) continue; // skip opted-out / unknown
+  let a = standByEvent.get(r.eid);
+  if (!a) { a = { part: r.participants, rows: [] }; standByEvent.set(r.eid, a); }
+  const der = r.wins == null ? recOf.get(`${pid}:${r.eid}`) : null;
+  a.rows.push({ id: pid, h: handleOfId.get(pid), rank: r.rank,
+    w: r.wins ?? der?.w ?? null, l: r.losses ?? der?.l ?? null, d: r.draws ?? der?.d ?? null });
+}
+rmSync("site/events", { recursive: true, force: true });
+mkdirSync("site/events", { recursive: true });
+let evShards = 0;
+for (const [eid, a] of standByEvent) {
+  const ev = events[eid];
+  if (!ev) continue;
+  a.rows.sort((x, y) => x.rank - y.rank);
+  writeFileSync(`site/events/${eid}.json`, JSON.stringify({
+    id: eid, name: ev.name, date: ev.date, tier: ev.tier, tierLabel: ev.tierLabel,
+    country: ev.country, region: ev.region, participants: a.part || a.rows.length,
+    standings: a.rows,
+  }));
+  evShards++;
+}
+console.log(`tournaments: ${evShards} event shards`);
+
 // --- 4) search index: ALWAYS the full player set (compact id+handle), decoupled
 // from profile-shard generation. The leaderboards are capped at the top rows, so
 // without this a player below the cap can't be found at all. It's cheap (~30 B/row)

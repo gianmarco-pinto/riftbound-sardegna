@@ -19,6 +19,11 @@ const PAGE = 250;
 // every run so a late-finalized standing overwrites an intermediate capture).
 const REFRESH_MAX = Number(process.env.REFRESH_MAX || 5000);
 const FRESH_DAYS = Number(process.env.FRESH_DAYS || 21);
+// Safety valve for the human factor: if an organizer forgets to mark an event
+// "complete", ingest it anyway once it's this many days past its start (the
+// standings are final the moment the rounds end — closing the event is just an
+// admin flag). The ≤FRESH_DAYS re-refresh still corrects it if they close/edit later.
+const FORCE_AFTER_DAYS = Number(process.env.FORCE_AFTER_DAYS || 5);
 
 const putPlacement = db.prepare(`
   INSERT INTO placements (event_id, player_id, rank, participants, wins, losses, draws)
@@ -59,15 +64,18 @@ async function fetchRegistrations(eventId) {
 // backfills the ~140k old pre-lockdown placements that only had a rank (so their
 // record stopped being byes-blind match guesses) and keeps recent events current.
 // Only CONCLUDED tournaments: gate on UVS display_status = 'complete' so we never
-// freeze an intermediate standing of a still-running event. `status IS NULL` is a
-// transition fallback for events discovered before the column existed (discover
-// repopulates status each sweep, so in-progress ones then get correctly excluded);
-// such legacy events are also old (past date) so almost certainly already done.
+// freeze an intermediate standing of a still-running event. Exceptions, OR'd in:
+//  - status IS NULL  → transition fallback for events discovered before the column
+//    (discover repopulates it each sweep; such events are also past-dated → done);
+//  - date < forceCutoff → safety valve: an organizer who forgot to mark the event
+//    complete shouldn't make us drop it forever — ingest it FORCE_AFTER_DAYS after
+//    its start regardless of status.
+const forceCutoff = new Date(Date.now() - FORCE_AFTER_DAYS * 864e5).toISOString();
 const newTargets = db.prepare(`
   SELECT id, date FROM events
   WHERE ingested_at IS NULL AND date < datetime('now')
-    AND (status = 'complete' OR status IS NULL)
-  ORDER BY date DESC LIMIT ?`).all(MAX_EVENTS);
+    AND (status = 'complete' OR status IS NULL OR date < ?)
+  ORDER BY date DESC LIMIT ?`).all(forceCutoff, MAX_EVENTS);
 const refreshTargets = resultsToRefresh(REFRESH_MAX, FRESH_DAYS);
 const seenIds = new Set(newTargets.map((e) => e.id));
 const targets = [...newTargets, ...refreshTargets.filter((e) => !seenIds.has(e.id))];

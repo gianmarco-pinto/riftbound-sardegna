@@ -98,6 +98,10 @@ for (const sql of [
   "ALTER TABLE placements ADD COLUMN wins INTEGER",
   "ALTER TABLE placements ADD COLUMN losses INTEGER",
   "ALTER TABLE placements ADD COLUMN draws INTEGER",
+  // when we last pulled this event's authoritative W/L/D from the registrations
+  // endpoint. NULL = never (e.g. events ingested by the old pre-lockdown pipeline,
+  // which only stored rank → W/L/D fell back to byes-blind match derivation).
+  "ALTER TABLE events ADD COLUMN results_at TEXT",
 ]) { try { db.exec(sql); } catch { /* already there */ } }
 
 // --- prepared upserts ---
@@ -125,6 +129,27 @@ export const upsertEvent = (e) =>
 // --- incremental ingestion state ---
 export const markIngested = (id) =>
   db.prepare("UPDATE events SET ingested_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+
+// Stamp when an event's authoritative W/L/D was fetched from registrations.
+export const markResults = (id) =>
+  db.prepare("UPDATE events SET results_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+
+/** Already-ingested events whose authoritative W/L/D needs a (re)fetch from the
+ *  registrations endpoint: either never fetched (results_at NULL — the big
+ *  pre-lockdown backfill) OR finished recently (re-fetched so late-finalized
+ *  results / top-cut overwrite an intermediate capture). Newest first so the
+ *  events people actually look at are corrected before the long tail. */
+export const resultsToRefresh = (limit, freshDays) => {
+  const now = new Date().toISOString();
+  const freshCutoff = new Date(Date.now() - freshDays * 864e5).toISOString();
+  return db.prepare(`
+    SELECT e.id, e.date FROM events e
+    WHERE e.date < ?
+      AND EXISTS (SELECT 1 FROM placements p WHERE p.event_id = e.id)
+      AND (e.results_at IS NULL OR e.date > ?)
+    ORDER BY e.date DESC
+    LIMIT ?`).all(now, freshCutoff, limit);
+};
 
 /** Past events in enabled countries not yet ingested.
  *  countries = ["*"] disables the country gate (worldwide ingestion).

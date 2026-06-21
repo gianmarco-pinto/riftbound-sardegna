@@ -7,13 +7,18 @@
 // Incremental: finished events not yet results-ingested, newest first. (Historical
 // W/L/D is NOT re-fetched — it's derived from the exact `matches` we already have,
 // in build-site.) Concurrency keeps the per-event registration fetches quick.
-import { db, upsertPlayer, markIngested, transaction } from "./db.mjs";
+import { db, upsertPlayer, markIngested, markResults, resultsToRefresh, transaction } from "./db.mjs";
 
 const BASE = "https://api.riftbound.uvsgames.com";
 const MAX_EVENTS = Number(process.env.MAX_EVENTS || 12000);
 const GIVE_UP_DAYS = Number(process.env.GIVE_UP_DAYS || 14);
 const CONC = Number(process.env.INGEST_CONCURRENCY || 6);
 const PAGE = 250;
+// W/L/D backfill: how many already-ingested events to (re)pull authoritative
+// records for per run, and how recently-finished events stay "fresh" (re-fetched
+// every run so a late-finalized standing overwrites an intermediate capture).
+const REFRESH_MAX = Number(process.env.REFRESH_MAX || 5000);
+const FRESH_DAYS = Number(process.env.FRESH_DAYS || 21);
 
 const putPlacement = db.prepare(`
   INSERT INTO placements (event_id, player_id, rank, participants, wins, losses, draws)
@@ -50,12 +55,18 @@ async function fetchRegistrations(eventId) {
   return { rows: out, count };
 }
 
-const targets = db.prepare(`
+// 1) NEW events (never ingested). 2) W/L/D (re)fresh of already-ingested events:
+// backfills the ~140k old pre-lockdown placements that only had a rank (so their
+// record stopped being byes-blind match guesses) and keeps recent events current.
+const newTargets = db.prepare(`
   SELECT id, date FROM events
   WHERE ingested_at IS NULL AND date < datetime('now')
   ORDER BY date DESC LIMIT ?`).all(MAX_EVENTS);
+const refreshTargets = resultsToRefresh(REFRESH_MAX, FRESH_DAYS);
+const seenIds = new Set(newTargets.map((e) => e.id));
+const targets = [...newTargets, ...refreshTargets.filter((e) => !seenIds.has(e.id))];
 
-console.log(`Ingest: up to ${targets.length} events (conc ${CONC})...`);
+console.log(`Ingest: ${newTargets.length} new + ${targets.length - newTargets.length} W/L/D refresh = ${targets.length} events (conc ${CONC})...`);
 let okEvents = 0, okPlacements = 0, empty = 0, errored = 0;
 
 async function handle(ev) {
@@ -75,6 +86,7 @@ async function handle(ev) {
         }
       }
       if (placed > 0 || ageDays > GIVE_UP_DAYS) markIngested(ev.id);
+      markResults(ev.id); // stamp: authoritative W/L/D pulled (or confirmed absent)
     });
     okPlacements += placed;
     if (placed > 0) okEvents++; else empty++;

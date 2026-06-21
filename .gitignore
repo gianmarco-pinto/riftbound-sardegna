@@ -16,6 +16,7 @@ node_modules/
 /site/data.json
 /site/leaderboards/
 /site/players/
+/site/events/
 
 # OS / editor
 .DS_Store

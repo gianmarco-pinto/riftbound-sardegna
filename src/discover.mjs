@@ -108,6 +108,7 @@ transaction(() => {
       lat: typeof s.latitude === "number" ? s.latitude : null,
       lng: typeof s.longitude === "number" ? s.longitude : null,
       continent: continentOf(country),
+      status: e.display_status ?? null,
     });
     events++;
   }
@@ -134,6 +135,7 @@ try {
         date: e.start_datetime || null, game: "riftbound",
         country: venueCountry, region: null, city: null, lat: null, lng: null,
         continent: continentOf(venueCountry),
+        status: e.display_status ?? null,
       });
       orgCount++;
     }

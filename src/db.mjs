@@ -102,6 +102,9 @@ for (const sql of [
   // endpoint. NULL = never (e.g. events ingested by the old pre-lockdown pipeline,
   // which only stored rank → W/L/D fell back to byes-blind match derivation).
   "ALTER TABLE events ADD COLUMN results_at TEXT",
+  // UVS `display_status` (upcoming / in_progress / complete ...). We only ingest
+  // results once it's "complete" — never process a tournament still running.
+  "ALTER TABLE events ADD COLUMN status TEXT",
 ]) { try { db.exec(sql); } catch { /* already there */ } }
 
 // --- prepared upserts ---
@@ -115,16 +118,17 @@ export const upsertStore = (s) =>
   _store.run(s.id, s.name ?? null, s.country ?? null, s.region ?? null, s.city ?? null, s.lat ?? null, s.lng ?? null);
 
 const _event = db.prepare(`
-  INSERT INTO events (id,name,store_id,date,game,country,region,city,lat,lng,continent)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  INSERT INTO events (id,name,store_id,date,game,country,region,city,lat,lng,continent,status)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(id) DO UPDATE SET
     name=excluded.name, store_id=excluded.store_id, date=excluded.date, game=excluded.game,
     country=excluded.country, region=excluded.region, city=excluded.city,
-    lat=excluded.lat, lng=excluded.lng, continent=excluded.continent`);
+    lat=excluded.lat, lng=excluded.lng, continent=excluded.continent,
+    status=COALESCE(excluded.status, events.status)`);
 export const upsertEvent = (e) =>
   _event.run(e.id, e.name ?? null, e.store_id ?? null, e.date ?? null, e.game ?? null,
     e.country ?? null, e.region ?? null, e.city ?? null, e.lat ?? null, e.lng ?? null,
-    e.continent ?? null);
+    e.continent ?? null, e.status ?? null);
 
 // --- incremental ingestion state ---
 export const markIngested = (id) =>

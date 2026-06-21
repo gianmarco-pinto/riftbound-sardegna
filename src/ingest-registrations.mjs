@@ -58,9 +58,15 @@ async function fetchRegistrations(eventId) {
 // 1) NEW events (never ingested). 2) W/L/D (re)fresh of already-ingested events:
 // backfills the ~140k old pre-lockdown placements that only had a rank (so their
 // record stopped being byes-blind match guesses) and keeps recent events current.
+// Only CONCLUDED tournaments: gate on UVS display_status = 'complete' so we never
+// freeze an intermediate standing of a still-running event. `status IS NULL` is a
+// transition fallback for events discovered before the column existed (discover
+// repopulates status each sweep, so in-progress ones then get correctly excluded);
+// such legacy events are also old (past date) so almost certainly already done.
 const newTargets = db.prepare(`
   SELECT id, date FROM events
   WHERE ingested_at IS NULL AND date < datetime('now')
+    AND (status = 'complete' OR status IS NULL)
   ORDER BY date DESC LIMIT ?`).all(MAX_EVENTS);
 const refreshTargets = resultsToRefresh(REFRESH_MAX, FRESH_DAYS);
 const seenIds = new Set(newTargets.map((e) => e.id));

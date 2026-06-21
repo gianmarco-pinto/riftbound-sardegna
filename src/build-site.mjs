@@ -87,19 +87,10 @@ for (const s of snaps) {
   });
 }
 for (const arr of seriesOf.values()) arr.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-
-// Per-event RATING change (Glicko delta): rating AFTER this event minus the
-// previous snapshot (first rated event = change from the 1500 seed). Only events
-// that went through the rating pipeline (exact pairings, the frozen Classic era)
-// have snapshots — registration-only / post-lockdown events get no delta.
-const rdeltaOf = new Map(); // `${pid}:${eid}` -> integer rating change
-for (const [pid, arr] of seriesOf) {
-  let prev = 1500;
-  for (const s of arr) {
-    rdeltaOf.set(`${pid}:${s.eventId}`, Math.round(s.rating - prev));
-    prev = s.rating;
-  }
-}
+// rdeltaOf (per-event rating change) is computed later, once event tiers/field
+// sizes are known — see "per-event RATING change" below. Glicko runs in WEEKLY
+// periods, so every event in the same week shares one snapshot rating; we must
+// attribute that week's change to the week's FLAGSHIP event, not split per row.
 
 const ratingRows = db.prepare(`
   SELECT r.player_id AS id, p.handle, r.rating, r.rd, r.vol,
@@ -486,6 +477,31 @@ for (const m of matchRows) {
     else r.l++;
   }
 }
+// Per-event RATING change (Glicko delta). Glicko runs in WEEKLY periods, so all of
+// a player's events in one week share ONE end-of-period snapshot rating. A naive
+// per-event delta dumps the whole week onto the FIRST event and shows 0 for the
+// rest (e.g. an RQ WON the day after a pre-event would show 0 while the pre-event
+// showed +51). So we group consecutive same-rating snapshots (= one period) and
+// attribute that period's change to its FLAGSHIP event (highest tier, then largest
+// field); the other events in the period get 0 (hidden). First period = vs 1500 seed.
+const rdeltaOf = new Map();
+const evTier = (eid) => events[eid]?.tier || 0;
+const evField = (eid) => fieldSizeOf.get(String(eid)) || 0;
+for (const [pid, arr] of seriesOf) {
+  let prev = 1500, i = 0;
+  while (i < arr.length) {
+    const r = arr[i].rating;
+    let j = i; const group = [];
+    while (j < arr.length && arr[j].rating === r) { group.push(arr[j].eventId); j++; }
+    let flag = group[0];
+    for (const eid of group)
+      if (evTier(eid) > evTier(flag) || (evTier(eid) === evTier(flag) && evField(eid) > evField(flag))) flag = eid;
+    const delta = Math.round(r - prev);
+    for (const eid of group) rdeltaOf.set(`${pid}:${eid}`, eid === flag ? delta : 0);
+    prev = r; i = j;
+  }
+}
+
 const resultsByPlayer = new Map();
 for (const r of db.prepare("SELECT player_id pid, event_id eid, rank, participants, wins, losses, draws FROM placements").all()) {
   const ev = events[r.eid];

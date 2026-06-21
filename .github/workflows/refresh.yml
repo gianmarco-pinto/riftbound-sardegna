@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: write   # state release assets
+  issues: write     # probe-pairings opens an issue if UVS reopens get_all_rounds
 
 concurrency:
   group: refresh-rankings

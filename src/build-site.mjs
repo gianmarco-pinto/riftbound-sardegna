@@ -393,15 +393,35 @@ const leaderboardIds = new Set();
 const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 5000);
 for (const scope of allScopes) {
   const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
-  // Global & continental boards: keep only players with a connected/strong-enough
-  // schedule (avg opponent rating). Country/Sardegna boards keep everyone.
-  const all = (scope === "global" || CONT_KEYS.has(scope)) ? inScope.filter((p) => p.avgOpp >= MIN_SOS) : inScope;
-  if (!all.length) continue;
-  const rows = all.slice(0, MAX_ROWS).map(lbRow);
+  const gated = scope === "global" || CONT_KEYS.has(scope);
+  // RATING board (global/continental): connectivity gate — only players whose
+  // schedule is strong/connected enough (avg opponent rating) earn a rating rank,
+  // so a big rating farmed against weak local opposition can't pollute the world
+  // board. Country/Sardegna boards gate nobody. (inScope is already rating-sorted.)
+  const ratingPool = gated ? inScope.filter((p) => p.avgOpp >= MIN_SOS) : inScope;
+  // CIRCUITO board: placement points are schedule-INDEPENDENT (earned by how far
+  // you finish, regardless of opponents), so the connectivity gate must NOT apply
+  // — a regional champion belongs on the world Circuito board even if their rating
+  // schedule is too local to be rating-ranked.
+  const racePool = inScope.filter((p) => p.race.points > 0)
+    .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
+  // The shard feeds BOTH views, so include the top rows of each (deduped). Each row
+  // carries `rated`: whether it qualifies for THIS scope's rating rank. The frontend
+  // hides non-`rated` rows from the Rating view but keeps them in the Circuito view.
+  const seen = new Set();
+  const rows = [];
+  const push = (p) => {
+    if (seen.has(p.id)) return;
+    seen.add(p.id);
+    rows.push({ ...lbRow(p), rated: !gated || p.avgOpp >= MIN_SOS });
+  };
+  ratingPool.slice(0, MAX_ROWS).forEach(push);
+  racePool.slice(0, MAX_ROWS).forEach(push);
+  if (!rows.length) continue;
   for (const r of rows) leaderboardIds.add(r.id);
   writeFileSync(`site/leaderboards/${scope}.json`,
-    JSON.stringify({ scope, generatedAt: new Date().toISOString(), totalPlayers: all.length, players: rows }));
-  scopeMeta.push({ scope, players: all.length });
+    JSON.stringify({ scope, generatedAt: new Date().toISOString(), totalPlayers: rows.length, players: rows }));
+  scopeMeta.push({ scope, players: ratingPool.length });
 }
 const countries = scopeMeta.filter((s) => /^[a-z]{2}$/.test(s.scope) && !CONTINENT_LABELS[s.scope.toUpperCase()]);
 // Don't advertise scopes that aren't real yet: a continent only counts once it

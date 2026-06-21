@@ -89,4 +89,15 @@ async function worker() {
 await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 writeFileSync(MANIFEST, JSON.stringify(next));
 console.log(`Published: ${uploaded} uploaded, ${skipped} unchanged, ${failed} failed -> bucket "${BUCKET}".`);
-if (failed) process.exit(1);
+// A handful of files can still 5xx after all retries when Supabase Storage is
+// under load (228k objects/run). They're dropped from the manifest above, so the
+// NEXT run retries exactly those — they self-heal. Don't fail an otherwise-green
+// run over a few transient timeouts (that just adds noise and can mask real
+// outages); only fail if failures exceed a small tolerance, which signals a
+// genuine problem (bad key, Storage down).
+const TOL = Number(process.env.PUBLISH_FAIL_TOLERANCE ?? 25);
+if (failed > TOL) {
+  console.error(`Too many failures (${failed} > tolerance ${TOL}) — failing the run.`);
+  process.exit(1);
+}
+if (failed) console.log(`(${failed} transient failure(s) within tolerance — they'll retry next run.)`);

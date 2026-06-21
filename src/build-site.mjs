@@ -88,6 +88,19 @@ for (const s of snaps) {
 }
 for (const arr of seriesOf.values()) arr.sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
+// Per-event RATING change (Glicko delta): rating AFTER this event minus the
+// previous snapshot (first rated event = change from the 1500 seed). Only events
+// that went through the rating pipeline (exact pairings, the frozen Classic era)
+// have snapshots — registration-only / post-lockdown events get no delta.
+const rdeltaOf = new Map(); // `${pid}:${eid}` -> integer rating change
+for (const [pid, arr] of seriesOf) {
+  let prev = 1500;
+  for (const s of arr) {
+    rdeltaOf.set(`${pid}:${s.eventId}`, Math.round(s.rating - prev));
+    prev = s.rating;
+  }
+}
+
 const ratingRows = db.prepare(`
   SELECT r.player_id AS id, p.handle, r.rating, r.rd, r.vol,
          r.games, r.wins, r.losses, r.draws, r.provisional, r.last_date AS lastDate
@@ -121,10 +134,12 @@ const eventPoints = (rank, n, tier) =>
   Math.round((TIER_BASE[tier] || 20) * Math.min(1.6, 1 + Math.log10(Math.max(1, n)) / 4) * placeBracket(rank, n));
 const raceCutoff = Date.now() - 365 * 24 * 3600e3;
 const raceOf = new Map();
+const fieldSizeOf = new Map(); // eid -> deduped field size used for Circuit points
 for (const [eid, info] of Object.entries(PLACEMENTS)) {
   const ev = events[eid];
   if (!ev?.tier) continue;
   const fieldSize = Object.keys(info.places).length;
+  fieldSizeOf.set(eid, fieldSize);
   const inRace = ev.date && Date.parse(ev.date) >= raceCutoff;
   for (const [pid, rank] of Object.entries(info.places)) {
     if (rank <= 3) {
@@ -147,17 +162,21 @@ for (const [eid, info] of Object.entries(PLACEMENTS)) {
       let r = raceOf.get(pid);
       if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0, _evt: [] }; raceOf.set(pid, r); }
       const pts = eventPoints(rank, fieldSize, ev.tier);
-      if (pts > 0) r._evt.push(pts);
+      if (pts > 0) r._evt.push({ eid, pts });
       r.events++;
       if (rank === 1) r.first++; else if (rank === 2) r.second++; else if (rank === 3) r.third++;
     }
   }
 }
-// Aggregate Circuit points = best-N events (or sum if RACE_BEST_N=0).
-for (const r of raceOf.values()) {
-  r._evt.sort((a, b) => b - a);
+// Aggregate Circuit points = best-N events (or sum if RACE_BEST_N=0). Remember
+// WHICH events were counted, so each tournament row can show whether its points
+// actually contribute to the player's current Circuit total.
+const countedEidsOf = new Map(); // pid -> Set(eid) of the best-N (in-window) events
+for (const [pid, r] of raceOf) {
+  r._evt.sort((a, b) => b.pts - a.pts);
   const counted = RACE_BEST_N > 0 ? r._evt.slice(0, RACE_BEST_N) : r._evt;
-  r.points = counted.reduce((s, x) => s + x, 0);
+  r.points = counted.reduce((s, x) => s + x.pts, 0);
+  countedEidsOf.set(pid, new Set(counted.map((x) => x.eid)));
   delete r._evt;
 }
 
@@ -478,10 +497,19 @@ for (const r of db.prepare("SELECT player_id pid, event_id eid, rank, participan
   let arr = resultsByPlayer.get(String(r.pid));
   if (!arr) { arr = []; resultsByPlayer.set(String(r.pid), arr); }
   const der = r.wins == null ? recOf.get(`${r.pid}:${r.eid}`) : null; // historical fallback from matches
+  // Points earned at this event, per system:
+  //  cpts    = Circuit points the finish is worth (best-N of these make the total)
+  //  counted = whether it's currently in the player's best-N 12-month window
+  //  rdelta  = Glicko rating change (only frozen Classic-era events have one)
+  const n = fieldSizeOf.get(String(r.eid)) ?? r.participants;
+  const cpts = ev.tier ? eventPoints(r.rank, n, ev.tier) : 0;
+  const counted = countedEidsOf.get(String(r.pid))?.has(String(r.eid)) ?? false;
+  const rdelta = rdeltaOf.get(`${r.pid}:${r.eid}`) ?? null;
   arr.push({
     eventId: r.eid, date: ev.date, eventName: ev.name, tier: ev.tier, tierLabel: ev.tierLabel,
     rank: r.rank, of: r.participants,
     wins: r.wins ?? der?.w ?? null, losses: r.losses ?? der?.l ?? null, draws: r.draws ?? der?.d ?? null,
+    cpts, counted, rdelta,
   });
 }
 

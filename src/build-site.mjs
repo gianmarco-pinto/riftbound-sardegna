@@ -147,7 +147,7 @@ const PREMIER_BEST_N = Number(process.env.PREMIER_BEST_N || 4);
 const CUT_FRAC = Number(process.env.CUT_FRAC || 0.08);   // premier "decent result" = top ~8%
 const CUT_FLOOR = Number(process.env.CUT_FLOOR || 4);
 const MAX_CUT = Number(process.env.MAX_CUT || 32);
-const MIN_PREMIER_FIELD = Number(process.env.MIN_PREMIER_FIELD || 8);
+const MIN_PREMIER_FIELD = Number(process.env.MIN_PREMIER_FIELD || 16); // a "Summoner Skirmish" needs >=16 players to count as premier (tiny ones -> local)
 const clampN = (lo, hi, x) => Math.max(lo, Math.min(hi, x));
 const sizeMult = (n) => clampN(1.0, 1.5, 1 + Math.log10(Math.max(1, n)) / 5);
 // a premier-tier event with too small a field is demoted to the local track.

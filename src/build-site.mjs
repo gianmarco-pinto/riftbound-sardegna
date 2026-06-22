@@ -319,6 +319,19 @@ const deflateRating = (raw, avgOpp) =>
   raw == null ? null : Math.round(raw - DEFLATE_K * Math.max(0, SOS_REF - (avgOpp || 0)));
 const CONT_KEYS = new Set(Object.keys(CONTINENT_LABELS).map((k) => k.toLowerCase()));
 
+// --- Rating reliability (council 2026-06-22): boards rank on a CONSERVATIVE lower
+// bound CR = rating - K*RD (kills small-sample hot streaks), behind hard eligibility
+// gates (min events/games, RD cap). Option-B deflation: local single-pool boards
+// show RAW (everyone shares one pond), only global/continental deflate. ---
+const RATING_K = Number(process.env.RATING_CONSERVATISM_K || 1.5);
+const MIN_EVENTS = Number(process.env.MIN_EVENTS || 5);            // <5 distinct events = not a sample
+const MIN_GAMES = Number(process.env.MIN_GAMES_ESTABLISHED || 40); // raised from effective 25
+const PROVISIONAL_RD = Number(process.env.PROVISIONAL_RD || 90);   // tightened from 110
+const conservative = (rating, rd) => rating == null ? null : Math.round(rating - RATING_K * (rd ?? 0));
+const isLocalScope = (scope) => scope !== "global" && !CONT_KEYS.has(scope);
+// scope-appropriate POINT rating: raw on local boards, deflated on global/continental.
+const scopeRatingOf = (p, scope) => isLocalScope(scope) ? p.ratingRaw : p.rating;
+
 // Handles + records for players who exist ONLY via placements (no match-based
 // rating). Their W/L/D comes from the registrations endpoint (stored on placements).
 const handleById = new Map(db.prepare("SELECT id, handle FROM players").all().map((r) => [String(r.id), r.handle]));
@@ -333,10 +346,12 @@ for (const pr of db.prepare("SELECT pl.player_id pid, pl.wins w, pl.losses l, pl
 const players = ratingRows.map((p) => {
   let bestWin = null, worstLoss = null;
   const oppSet = new Set();
+  const evSet = new Set();
   let oppSum = 0, oppN = 0;
   for (const m of matchesByPlayer.get(p.id) || []) {
     const meA = m.a === p.id;
     const oppId = meA ? m.b : m.a;
+    if (m.eventId != null) evSet.add(m.eventId);
     if (oppId != null) {
       oppSet.add(oppId);
       const oppCur = ratingMap.get(oppId)?.rating;
@@ -352,13 +367,18 @@ const players = ratingRows.map((p) => {
     if (lost && (!worstLoss || oppRating < worstLoss.oppRating)) worstLoss = rec;
   }
   const avgOpp = oppN ? Math.round(oppSum / oppN) : 0;
-  const provisional = !!p.provisional || oppSet.size < MIN_OPPONENTS;
+  // Established only if a real sample: enough distinct events AND games AND a tight
+  // enough RD (a 3-event/31-game hot streak with RD 83 must NOT rank). Plus the
+  // legacy opponent floor / base-provisional flags.
+  const provisional = !!p.provisional || oppSet.size < MIN_OPPONENTS
+    || evSet.size < MIN_EVENTS || p.games < MIN_GAMES || p.rd > PROVISIONAL_RD;
   return {
     id: p.id,
     handle: handleOf(p.handle, p.id),
-    // displayed rating = SOS-deflated (everywhere). raw kept for reference/series.
+    // raw + SOS-deflated both kept; the displayed/sorted value is chosen PER SCOPE
+    // (raw locally, deflated globally) and ranked by the conservative CR = x - K*RD.
     rating: deflateRating(p.rating, avgOpp), ratingRaw: Math.round(p.rating), rd: p.rd, vol: p.vol,
-    games: p.games, wins: p.wins, losses: p.losses, draws: p.draws,
+    games: p.games, wins: p.wins, losses: p.losses, draws: p.draws, events: evSet.size,
     provisional, avgOpp, lastDate: p.lastDate,
     regions: [...(scopesOf.get(p.id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
     scopes: [...(scopesOf.get(p.id) || [])],
@@ -409,10 +429,12 @@ const allScopes = new Set(["global", ...publicPlayers.flatMap((p) => p.scopes)])
 const positionsOf = new Map(); // pid -> [{scope, elo, of, race, raceOf}]
 for (const scope of allScopes) {
   const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
-  // Chess-style rule: provisional ratings are UNRANKED — the official rank counts
-  // established players only. No SOS gate anymore: weak schedules are handled by
-  // rating deflation (above), so everyone established is ranked, by deflated rating.
-  const ranked = inScope.filter((p) => !p.provisional); // rating-sorted already (deflated)
+  // Provisional ratings are UNRANKED. Established players are ranked by the
+  // scope-appropriate CONSERVATIVE rating (raw locally / deflated globally, minus K*RD).
+  const ranked = inScope.filter((p) => !p.provisional)
+    .map((p) => ({ p, cr: conservative(scopeRatingOf(p, scope), p.rd) }))
+    .sort((a, b) => b.cr - a.cr)
+    .map((x) => x.p);
   const eloRank = new Map(ranked.map((p, i) => [p.id, i + 1]));
   const byRace = inScope.filter((p) => p.race.points > 0)
     .sort((a, b) => b.race.points - a.race.points || b.race.first - a.race.first);
@@ -467,9 +489,11 @@ const leaderboardIds = new Set();
 const MAX_ROWS = Number(process.env.LEADERBOARD_MAX_ROWS || 5000);
 for (const scope of allScopes) {
   const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
-  // RATING board: no connectivity gate — weak schedules are deflated, not excluded,
-  // so the pool is everyone in scope (already sorted by deflated rating).
-  const ratingPool = inScope;
+  // RATING board: ranked by the scope-appropriate CONSERVATIVE rating (raw locally /
+  // deflated globally, minus K*RD). The displayed `rating` IS that CR; `ratingPoint`
+  // keeps the point estimate for the row expansion. (Circuito ignores `rating`.)
+  const ratingPool = inScope.slice()
+    .sort((a, b) => conservative(scopeRatingOf(b, scope), b.rd) - conservative(scopeRatingOf(a, scope), a.rd));
   // CIRCUITO board: ranked by placement points (schedule-independent). Union the top
   // rows of each pool so registration-only / lower-rated high-Circuit players (who
   // fall outside the rating top-N) still appear in the Circuito view.
@@ -480,7 +504,8 @@ for (const scope of allScopes) {
   const push = (p) => {
     if (seen.has(p.id)) return;
     seen.add(p.id);
-    rows.push({ ...lbRow(p), rated: true }); // no SOS exclusion anymore (deflation)
+    const point = scopeRatingOf(p, scope);
+    rows.push({ ...lbRow(p), rating: conservative(point, p.rd), ratingPoint: point, events: p.events, rated: true });
   };
   ratingPool.slice(0, MAX_ROWS).forEach(push);
   racePool.slice(0, MAX_ROWS).forEach(push);

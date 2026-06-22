@@ -143,16 +143,28 @@ export const markResults = (id) =>
  *  pre-lockdown backfill) OR finished recently (re-fetched so late-finalized
  *  results / top-cut overwrite an intermediate capture). Newest first so the
  *  events people actually look at are corrected before the long tail. */
-export const resultsToRefresh = (limit, freshDays) => {
+export const resultsToRefresh = (backfillLimit, freshDays) => {
   const now = new Date().toISOString();
   const freshCutoff = new Date(Date.now() - freshDays * 864e5).toISOString();
-  return db.prepare(`
+  // BACKFILL: events whose authoritative W/L/D was NEVER fetched (the ~140k old
+  // pre-lockdown placements, results_at NULL). Newest first, with its OWN budget —
+  // kept SEPARATE from the fresh re-check below so a busy recent window (often
+  // >>backfillLimit events) can't starve the historical backfill (it did: a single
+  // combined newest-first query never reached anything older than ~2 weeks).
+  const backfill = db.prepare(`
     SELECT e.id, e.date FROM events e
-    WHERE e.date < ?
+    WHERE e.date < ? AND e.results_at IS NULL
+      AND EXISTS (SELECT 1 FROM placements p WHERE p.event_id = e.id AND p.wins IS NULL)
+    ORDER BY e.date DESC LIMIT ?`).all(now, backfillLimit);
+  // FRESH: recently-finished events re-checked for a late finalization / correction.
+  // Small window so it stays bounded and doesn't crowd out the backfill.
+  const fresh = db.prepare(`
+    SELECT e.id, e.date FROM events e
+    WHERE e.date < ? AND e.date > ?
       AND EXISTS (SELECT 1 FROM placements p WHERE p.event_id = e.id)
-      AND (e.results_at IS NULL OR e.date > ?)
-    ORDER BY e.date DESC
-    LIMIT ?`).all(now, freshCutoff, limit);
+    ORDER BY e.date DESC`).all(now, freshCutoff);
+  const seen = new Set(backfill.map((e) => e.id));
+  return [...backfill, ...fresh.filter((e) => !seen.has(e.id))];
 };
 
 /** Past events in enabled countries not yet ingested.

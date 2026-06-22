@@ -141,7 +141,9 @@ const setOf = (date) => {
 const NOW = Date.now();
 const currentSetId = setOf(new Date(NOW).toISOString()) || SET_DATES[SET_DATES.length - 1].id;
 
-const BASE = { 1: 18, 2: 20, 3: 40, 4: 90, 5: 150 };
+// Premier bases RAISED so an RQ/Regional result dominates local Skirmish grinding:
+// a 2-RQ champion (incl. a win) must outrank a 4-Skirmish farmer. RQ:Skirmish ≈ 4.3x.
+const BASE = { 1: 18, 2: 20, 3: 30, 4: 130, 5: 230 };
 const LOCAL_BEST_N = Number(process.env.LOCAL_BEST_N || 5);
 const PREMIER_BEST_N = Number(process.env.PREMIER_BEST_N || 4);
 const CUT_FRAC = Number(process.env.CUT_FRAC || 0.08);   // premier "decent result" = top ~8%

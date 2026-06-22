@@ -278,6 +278,7 @@ for (const [eid, info] of Object.entries(PLACEMENTS)) {
 }
 
 const scopesOf = new Map(); // pid -> Set of scope keys
+const homeCountryOf = new Map(); // pid -> ISO2 home country (for the leaderboard flag)
 for (const [pid, g] of geoOf) {
   const scopes = new Set(["global"]);
   let home = null, best = null;
@@ -295,6 +296,7 @@ for (const [pid, g] of geoOf) {
   }
   if (g.sardegna) { scopes.add("sardegna"); scopes.add("it"); scopes.add("eu"); }
   scopesOf.set(pid, scopes);
+  if (home) homeCountryOf.set(pid, home);
 }
 
 // --- build full player objects ---
@@ -379,7 +381,7 @@ const players = ratingRows.map((p) => {
     // (raw locally, deflated globally) and ranked by the conservative CR = x - K*RD.
     rating: deflateRating(p.rating, avgOpp), ratingRaw: Math.round(p.rating), rd: p.rd, vol: p.vol,
     games: p.games, wins: p.wins, losses: p.losses, draws: p.draws, events: evSet.size,
-    provisional, avgOpp, lastDate: p.lastDate,
+    provisional, avgOpp, lastDate: p.lastDate, country: homeCountryOf.get(String(p.id)) || null,
     regions: [...(scopesOf.get(p.id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
     scopes: [...(scopesOf.get(p.id) || [])],
     series: seriesOf.get(p.id) || [],
@@ -403,7 +405,7 @@ for (const id of raceOf.keys()) {
     handle: handleOf(handleById.get(String(id)), id),
     rating: null, rd: null, vol: null,
     games: rec.w + rec.l + rec.d, wins: rec.w, losses: rec.l, draws: rec.d,
-    provisional: true, avgOpp: 0, lastDate: rec.last,
+    provisional: true, avgOpp: 0, lastDate: rec.last, country: homeCountryOf.get(String(id)) || null,
     regions: [...(scopesOf.get(id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
     scopes: [...(scopesOf.get(id) || [])],
     series: [], bestWin: null, worstLoss: null,
@@ -473,7 +475,7 @@ mkdirSync("site", { recursive: true });
 const lbRow = (p) => ({
   id: p.id, handle: p.handle, rating: p.rating, rd: p.rd,
   games: p.games, wins: p.wins, losses: p.losses, draws: p.draws,
-  provisional: p.provisional, race: p.race,
+  provisional: p.provisional, race: p.race, country: p.country,
 });
 rmSync("site/leaderboards", { recursive: true, force: true });
 mkdirSync("site/leaderboards", { recursive: true });
@@ -535,16 +537,16 @@ for (const scope of allScopes) {
     mkdirSync(`site/circuit/${scope}`, { recursive: true });
     for (const s of startedSets) {
       const rows = [];
-      for (const pl of pub) { const sc = setPoints(pl.id, s.id); if (sc && sc.points > 0) rows.push({ id: pl.id, h: pl.h, points: sc.points, premierPts: sc.premierPts, events: sc.events, first: sc.first }); }
+      for (const pl of pub) { const sc = setPoints(pl.id, s.id); if (sc && sc.points > 0) rows.push({ id: pl.id, h: pl.h, c: pl.c, points: sc.points, premierPts: sc.premierPts, events: sc.events, first: sc.first }); }
       rows.sort((a, b) => b.points - a.points || b.premierPts - a.premierPts || b.first - a.first);
       writeFileSync(`site/circuit/${scope}/${s.id}.json`, JSON.stringify({ set: s.id, name: s.name, start: s.start, scope, current: s.id === currentSetId, totalPlayers: rows.length, players: rows.slice(0, CIRC_MAX) }));
     }
     const cur = [];
-    for (const pl of pub) { const c = setPoints(pl.id, currentSetId)?.points || 0; const p = (wPrev > 0 && prevSetId) ? (setPoints(pl.id, prevSetId)?.points || 0) : 0; const pts = Math.round(c + wPrev * p); if (pts > 0) cur.push({ id: pl.id, h: pl.h, points: pts, curPoints: c }); }
+    for (const pl of pub) { const c = setPoints(pl.id, currentSetId)?.points || 0; const p = (wPrev > 0 && prevSetId) ? (setPoints(pl.id, prevSetId)?.points || 0) : 0; const pts = Math.round(c + wPrev * p); if (pts > 0) cur.push({ id: pl.id, h: pl.h, c: pl.c, points: pts, curPoints: c }); }
     cur.sort((a, b) => b.points - a.points || b.curPoints - a.curPoints);
     writeFileSync(`site/circuit/${scope}/current.json`, JSON.stringify({ set: currentSetId, name: SET_DATES[idx].name, start: SET_DATES[idx].start, scope, prevSet: prevSetId, transitionWeight: Math.round(wPrev * 100) / 100, totalPlayers: cur.length, players: cur.slice(0, CIRC_MAX) }));
     const at = [];
-    for (const pl of pub) { const cm = raceSetOf.get(pl.id); if (!cm) continue; let sum = 0, peak = 0, sets = 0; for (const [, sc] of cm) if (sc.points > 0) { sum += sc.points; sets++; if (sc.points > peak) peak = sc.points; } if (sum > 0) at.push({ id: pl.id, h: pl.h, points: sum, peak, sets }); }
+    for (const pl of pub) { const cm = raceSetOf.get(pl.id); if (!cm) continue; let sum = 0, peak = 0, sets = 0; for (const [, sc] of cm) if (sc.points > 0) { sum += sc.points; sets++; if (sc.points > peak) peak = sc.points; } if (sum > 0) at.push({ id: pl.id, h: pl.h, c: pl.c, points: sum, peak, sets }); }
     at.sort((a, b) => b.points - a.points || b.peak - a.peak);
     writeFileSync(`site/circuit/${scope}/alltime.json`, JSON.stringify({ scope, totalPlayers: at.length, players: at.slice(0, CIRC_MAX) }));
   };
@@ -553,7 +555,7 @@ for (const scope of allScopes) {
   for (const scope of allScopes) {
     const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
     if (!inScope.length) continue;
-    writeScope(scope, inScope.map((p) => ({ id: String(p.id), h: p.handle })));
+    writeScope(scope, inScope.map((p) => ({ id: String(p.id), h: p.handle, c: p.country })));
     scopeCount++;
   }
   const setMeta = startedSets.map((s) => {

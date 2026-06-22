@@ -53,7 +53,9 @@ function classifyTier(name, official) {
     if (/regional championship/i.test(n)) return 5;
     if (/regional qualifier/i.test(n)) return 4;
   }
-  if (/skirmish/i.test(n)) return 3;
+  // Only the official "Summoner Skirmish" is the premier local tier; generic
+  // "<store> Skirmish" look-alikes (~1.2k) fall through to Nexus.
+  if (/summoner skirmish/i.test(n)) return 3;
   if (/nexus/i.test(n)) return 2;
   if (/pre.?rift|release/i.test(n)) return 1;
   return 2;
@@ -116,22 +118,65 @@ const majorsOf = new Map(); // pid -> [{eventName, date, tier, label, rank, part
 // 10-player win = 10). Now: a tier base, a gentle log size bonus that only raises the
 // CEILING for good finishes, a placement BRACKET (mid/low = 0, no participation floor),
 // and BEST-N aggregation (not sum) to stop volume/travel farming.
-const TIER_BASE = { 1: 18, 2: 20, 3: 28, 4: 60, 5: 100 }; // RQ=4, Regional=5 (reliably detected); generic ~20
-const RACE_BEST_N = Number(process.env.RACE_BEST_N || 10); // count only the best N events; 0 = sum all
-const placeBracket = (rank, n) =>
-  rank === 1 ? 1.0 : rank <= 4 ? 0.55 : rank <= 8 ? 0.35 : rank <= 16 ? 0.22 : rank <= 32 ? 0.12
-    : rank <= Math.max(8, Math.ceil(0.10 * n)) ? 0.05 : 0;
-const eventPoints = (rank, n, tier) =>
-  Math.round((TIER_BASE[tier] || 20) * Math.min(1.6, 1 + Math.log10(Math.max(1, n)) / 4) * placeBracket(rank, n));
-const raceCutoff = Date.now() - 365 * 24 * 3600e3;
-const raceOf = new Map();
+// CIRCUIT v2 — per-SET "Championship Race" (council + user, 2026-06-22). A season
+// IS a card set (~3 months). Two tracks per set: LOCAL (Pre-Rift/Nexus) counts your
+// best-LOCAL_BEST_N; PREMIER (Summoner Skirmish/RQ/Regional) counts your best-
+// PREMIER_BEST_N and ONLY a top-cut "decent result" scores (no participation
+// points). Reset every set → no staleness; the two best-N caps → no volume/travel
+// farming. Set membership is by event date against the published set calendar.
+const SET_DATES = [
+  { id: "origins", name: "Origins", start: "2025-10-31" },
+  { id: "spiritforged", name: "Spiritforged", start: "2026-02-13" },
+  { id: "unleashed", name: "Unleashed", start: "2026-05-08" },
+  { id: "vendetta", name: "Vendetta", start: "2026-07-31" },
+];
+const setStartMs = SET_DATES.map((s) => Date.parse(s.start));
+const setOf = (date) => {
+  const t = date ? Date.parse(date) : NaN;
+  if (Number.isNaN(t)) return null;
+  let id = null;
+  for (let i = 0; i < SET_DATES.length; i++) if (t >= setStartMs[i]) id = SET_DATES[i].id; else break;
+  return id; // before Set 1 → null (pre-season, not scored)
+};
+const NOW = Date.now();
+const currentSetId = setOf(new Date(NOW).toISOString()) || SET_DATES[SET_DATES.length - 1].id;
+
+const BASE = { 1: 18, 2: 20, 3: 40, 4: 90, 5: 150 };
+const LOCAL_BEST_N = Number(process.env.LOCAL_BEST_N || 5);
+const PREMIER_BEST_N = Number(process.env.PREMIER_BEST_N || 4);
+const CUT_FRAC = Number(process.env.CUT_FRAC || 0.08);   // premier "decent result" = top ~8%
+const CUT_FLOOR = Number(process.env.CUT_FLOOR || 4);
+const MAX_CUT = Number(process.env.MAX_CUT || 32);
+const MIN_PREMIER_FIELD = Number(process.env.MIN_PREMIER_FIELD || 8);
+const clampN = (lo, hi, x) => Math.max(lo, Math.min(hi, x));
+const sizeMult = (n) => clampN(1.0, 1.5, 1 + Math.log10(Math.max(1, n)) / 5);
+// a premier-tier event with too small a field is demoted to the local track.
+const trackOf = (tier, n) => (tier >= 3 && n >= MIN_PREMIER_FIELD) ? "premier" : "local";
+const capOf = (track, n) => track === "premier"
+  ? clampN(CUT_FLOOR, MAX_CUT, Math.ceil(CUT_FRAC * n))
+  : Math.max(8, Math.ceil(0.15 * n));
+const placeCurve = (rank, cap) => rank <= cap ? Math.pow(1 - (rank - 1) / cap, 1.5) : 0;
+const eventPoints = (rank, n, tier) => {
+  const track = trackOf(tier, n);
+  const effTier = (tier >= 3 && track === "local") ? 2 : tier; // demoted small premier scores as Nexus
+  return Math.round((BASE[effTier] || 20) * sizeMult(n) * placeCurve(rank, capOf(track, n)));
+};
+
 const fieldSizeOf = new Map(); // eid -> deduped field size used for Circuit points
+// raceBySet: pid -> Map(setId -> {premier:[{eid,pts}], local:[{eid,pts}], first,second,third, events})
+const raceBySet = new Map();
+const setBucket = (pid, setId) => {
+  let m = raceBySet.get(pid); if (!m) { m = new Map(); raceBySet.set(pid, m); }
+  let r = m.get(setId); if (!r) { r = { premier: [], local: [], first: 0, second: 0, third: 0, events: 0 }; m.set(setId, r); }
+  return r;
+};
 for (const [eid, info] of Object.entries(PLACEMENTS)) {
   const ev = events[eid];
   if (!ev?.tier) continue;
   const fieldSize = Object.keys(info.places).length;
   fieldSizeOf.set(eid, fieldSize);
-  const inRace = ev.date && Date.parse(ev.date) >= raceCutoff;
+  const setId = setOf(ev.date);
+  const track = trackOf(ev.tier, fieldSize);
   for (const [pid, rank] of Object.entries(info.places)) {
     if (rank <= 3) {
       let byTier = palmaresOf.get(pid);
@@ -145,30 +190,42 @@ for (const [eid, info] of Object.entries(PLACEMENTS)) {
     if (ev.tier >= 4) {
       let arr = majorsOf.get(pid);
       if (!arr) { arr = []; majorsOf.set(pid, arr); }
-      // participants = real placement rows (deduped by PK), not the stored
-      // `participants` column which an old paging bug inflated on a few majors.
-      arr.push({ eventName: ev.name, date: ev.date, tier: ev.tier, label: ev.tierLabel, rank, participants: Object.keys(info.places).length });
+      arr.push({ eventName: ev.name, date: ev.date, tier: ev.tier, label: ev.tierLabel, rank, participants: fieldSize });
     }
-    if (inRace) {
-      let r = raceOf.get(pid);
-      if (!r) { r = { points: 0, events: 0, first: 0, second: 0, third: 0, _evt: [] }; raceOf.set(pid, r); }
+    if (setId) {
       const pts = eventPoints(rank, fieldSize, ev.tier);
-      if (pts > 0) r._evt.push({ eid, pts });
+      const r = setBucket(pid, setId);
       r.events++;
       if (rank === 1) r.first++; else if (rank === 2) r.second++; else if (rank === 3) r.third++;
+      if (pts > 0) (track === "premier" ? r.premier : r.local).push({ eid, pts });
     }
   }
 }
-// Aggregate Circuit points = best-N events (or sum if RACE_BEST_N=0). Remember
-// WHICH events were counted, so each tournament row can show whether its points
-// actually contribute to the player's current Circuit total.
-const countedEidsOf = new Map(); // pid -> Set(eid) of the best-N (in-window) events
-for (const [pid, r] of raceOf) {
-  r._evt.sort((a, b) => b.pts - a.pts);
-  const counted = RACE_BEST_N > 0 ? r._evt.slice(0, RACE_BEST_N) : r._evt;
-  r.points = counted.reduce((s, x) => s + x.pts, 0);
-  countedEidsOf.set(pid, new Set(counted.map((x) => x.eid)));
-  delete r._evt;
+// Per (player, set): setScore = best-PREMIER_BEST_N premier + best-LOCAL_BEST_N local.
+// raceSetOf: pid -> Map(setId -> {points, premierPts, localPts, events, first, second, third}).
+// countedEidsOf: pid -> Set(eid) of events that contributed to ANY set's score (for the C badge).
+const raceSetOf = new Map();
+const countedEidsOf = new Map();
+for (const [pid, m] of raceBySet) {
+  const cm = new Map(); raceSetOf.set(pid, cm);
+  const counted = new Set();
+  for (const [setId, r] of m) {
+    r.premier.sort((a, b) => b.pts - a.pts);
+    r.local.sort((a, b) => b.pts - a.pts);
+    const P = r.premier.slice(0, PREMIER_BEST_N), L = r.local.slice(0, LOCAL_BEST_N);
+    const premierPts = P.reduce((s, x) => s + x.pts, 0), localPts = L.reduce((s, x) => s + x.pts, 0);
+    cm.set(setId, { points: premierPts + localPts, premierPts, localPts, events: r.events, first: r.first, second: r.second, third: r.third });
+    for (const x of P) counted.add(x.eid);
+    for (const x of L) counted.add(x.eid);
+  }
+  countedEidsOf.set(pid, counted);
+}
+// Headline `race` = the CURRENT set's standing (keeps the existing per-scope board
+// working; the dedicated per-set / all-time views read the circuit/* shards below).
+const raceOf = new Map();
+for (const [pid, cm] of raceSetOf) {
+  const cur = cm.get(currentSetId);
+  if (cur && cur.points > 0) raceOf.set(pid, { points: cur.points, events: cur.events, first: cur.first, second: cur.second, third: cur.third, premierPts: cur.premierPts, localPts: cur.localPts });
 }
 
 // --- per-player scopes + matches ---
@@ -429,6 +486,56 @@ for (const scope of allScopes) {
     JSON.stringify({ scope, generatedAt: new Date().toISOString(), totalPlayers: rows.length, players: rows }));
   scopeMeta.push({ scope, players: ratingPool.length });
 }
+
+// --- 2b) Circuit shards (global): current set (headline, soft-transition blended),
+// every started set (frozen history), and all-time (sum of per-set scores + peak).
+{
+  mkdirSync("site/circuit", { recursive: true });
+  const pub = publicPlayers.map((p) => ({ id: String(p.id), h: p.handle }));
+  const CIRC_MAX = Number(process.env.CIRCUIT_MAX_ROWS || 5000);
+  const setPoints = (pid, setId) => raceSetOf.get(pid)?.get(setId) || null;
+  const idx = SET_DATES.findIndex((s) => s.id === currentSetId);
+  const prevSetId = idx > 0 ? SET_DATES[idx - 1].id : null;
+  const setMeta = [];
+  for (const s of SET_DATES) {
+    if (Date.parse(s.start) > NOW) continue; // not started yet
+    const rows = [];
+    for (const pl of pub) {
+      const sc = setPoints(pl.id, s.id);
+      if (sc && sc.points > 0) rows.push({ id: pl.id, h: pl.h, points: sc.points, premierPts: sc.premierPts, events: sc.events, first: sc.first });
+    }
+    rows.sort((a, b) => b.points - a.points || b.premierPts - a.premierPts || b.first - a.first);
+    writeFileSync(`site/circuit/${s.id}.json`, JSON.stringify({ set: s.id, name: s.name, start: s.start, current: s.id === currentSetId, totalPlayers: rows.length, players: rows.slice(0, CIRC_MAX) }));
+    setMeta.push({ set: s.id, name: s.name, start: s.start, players: rows.length });
+  }
+  // current.json: current set blended with the previous set during the soft transition
+  // (w_prev decays to 0 over TRANSITION_RAMP_DAYS so release day is never empty).
+  const RAMP = Number(process.env.TRANSITION_RAMP_DAYS || 21);
+  const D = (NOW - Date.parse(SET_DATES[idx].start)) / 864e5;
+  const wPrev = prevSetId ? clampN(0, 1, 1 - D / RAMP) : 0;
+  const cur = [];
+  for (const pl of pub) {
+    const c = setPoints(pl.id, currentSetId)?.points || 0;
+    const p = (wPrev > 0 && prevSetId) ? (setPoints(pl.id, prevSetId)?.points || 0) : 0;
+    const pts = Math.round(c + wPrev * p);
+    if (pts > 0) cur.push({ id: pl.id, h: pl.h, points: pts, curPoints: c });
+  }
+  cur.sort((a, b) => b.points - a.points || b.curPoints - a.curPoints);
+  writeFileSync("site/circuit/current.json", JSON.stringify({ set: currentSetId, name: SET_DATES[idx].name, start: SET_DATES[idx].start, prevSet: prevSetId, transitionWeight: Math.round(wPrev * 100) / 100, totalPlayers: cur.length, players: cur.slice(0, CIRC_MAX) }));
+  // all-time: sum of per-set scores + peak single set (council: sum primary, peak 2nd sort)
+  const at = [];
+  for (const pl of pub) {
+    const cm = raceSetOf.get(pl.id); if (!cm) continue;
+    let sum = 0, peak = 0, sets = 0;
+    for (const [, sc] of cm) if (sc.points > 0) { sum += sc.points; sets++; if (sc.points > peak) peak = sc.points; }
+    if (sum > 0) at.push({ id: pl.id, h: pl.h, points: sum, peak, sets });
+  }
+  at.sort((a, b) => b.points - a.points || b.peak - a.peak);
+  writeFileSync("site/circuit/alltime.json", JSON.stringify({ totalPlayers: at.length, players: at.slice(0, CIRC_MAX) }));
+  writeFileSync("site/circuit/index.json", JSON.stringify({ generatedAt: new Date().toISOString(), currentSet: currentSetId, transitionWeight: Math.round(wPrev * 100) / 100, sets: setMeta }));
+  console.log(`circuit: ${setMeta.length} set shards + current + all-time (current=${currentSetId}, wPrev=${wPrev.toFixed(2)})`);
+}
+
 const countries = scopeMeta.filter((s) => /^[a-z]{2}$/.test(s.scope) && !CONTINENT_LABELS[s.scope.toUpperCase()]);
 // Don't advertise scopes that aren't real yet: a continent only counts once it
 // has >=2 ingested countries, and "global" only once >=2 countries exist —

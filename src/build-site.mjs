@@ -487,53 +487,52 @@ for (const scope of allScopes) {
   scopeMeta.push({ scope, players: ratingPool.length });
 }
 
-// --- 2b) Circuit shards (global): current set (headline, soft-transition blended),
-// every started set (frozen history), and all-time (sum of per-set scores + peak).
+// --- 2b) Circuit shards PER SCOPE (so the Sardegna/country/global filter works on
+// every view): for each scope -> current set (soft-transition blended), each started
+// set (frozen history), all-time (sum of per-set scores + peak). index.json (global)
+// lists the sets. Filtering the global top-N client-side would NOT work — local
+// players fall outside the global cap — hence true per-scope standings.
 {
-  mkdirSync("site/circuit", { recursive: true });
-  const pub = publicPlayers.map((p) => ({ id: String(p.id), h: p.handle }));
   const CIRC_MAX = Number(process.env.CIRCUIT_MAX_ROWS || 5000);
   const setPoints = (pid, setId) => raceSetOf.get(pid)?.get(setId) || null;
   const idx = SET_DATES.findIndex((s) => s.id === currentSetId);
   const prevSetId = idx > 0 ? SET_DATES[idx - 1].id : null;
-  const setMeta = [];
-  for (const s of SET_DATES) {
-    if (Date.parse(s.start) > NOW) continue; // not started yet
-    const rows = [];
-    for (const pl of pub) {
-      const sc = setPoints(pl.id, s.id);
-      if (sc && sc.points > 0) rows.push({ id: pl.id, h: pl.h, points: sc.points, premierPts: sc.premierPts, events: sc.events, first: sc.first });
-    }
-    rows.sort((a, b) => b.points - a.points || b.premierPts - a.premierPts || b.first - a.first);
-    writeFileSync(`site/circuit/${s.id}.json`, JSON.stringify({ set: s.id, name: s.name, start: s.start, current: s.id === currentSetId, totalPlayers: rows.length, players: rows.slice(0, CIRC_MAX) }));
-    setMeta.push({ set: s.id, name: s.name, start: s.start, players: rows.length });
-  }
-  // current.json: current set blended with the previous set during the soft transition
-  // (w_prev decays to 0 over TRANSITION_RAMP_DAYS so release day is never empty).
   const RAMP = Number(process.env.TRANSITION_RAMP_DAYS || 21);
   const D = (NOW - Date.parse(SET_DATES[idx].start)) / 864e5;
   const wPrev = prevSetId ? clampN(0, 1, 1 - D / RAMP) : 0;
-  const cur = [];
-  for (const pl of pub) {
-    const c = setPoints(pl.id, currentSetId)?.points || 0;
-    const p = (wPrev > 0 && prevSetId) ? (setPoints(pl.id, prevSetId)?.points || 0) : 0;
-    const pts = Math.round(c + wPrev * p);
-    if (pts > 0) cur.push({ id: pl.id, h: pl.h, points: pts, curPoints: c });
+  const startedSets = SET_DATES.filter((s) => Date.parse(s.start) <= NOW);
+
+  const writeScope = (scope, pub) => {
+    mkdirSync(`site/circuit/${scope}`, { recursive: true });
+    for (const s of startedSets) {
+      const rows = [];
+      for (const pl of pub) { const sc = setPoints(pl.id, s.id); if (sc && sc.points > 0) rows.push({ id: pl.id, h: pl.h, points: sc.points, premierPts: sc.premierPts, events: sc.events, first: sc.first }); }
+      rows.sort((a, b) => b.points - a.points || b.premierPts - a.premierPts || b.first - a.first);
+      writeFileSync(`site/circuit/${scope}/${s.id}.json`, JSON.stringify({ set: s.id, name: s.name, start: s.start, scope, current: s.id === currentSetId, totalPlayers: rows.length, players: rows.slice(0, CIRC_MAX) }));
+    }
+    const cur = [];
+    for (const pl of pub) { const c = setPoints(pl.id, currentSetId)?.points || 0; const p = (wPrev > 0 && prevSetId) ? (setPoints(pl.id, prevSetId)?.points || 0) : 0; const pts = Math.round(c + wPrev * p); if (pts > 0) cur.push({ id: pl.id, h: pl.h, points: pts, curPoints: c }); }
+    cur.sort((a, b) => b.points - a.points || b.curPoints - a.curPoints);
+    writeFileSync(`site/circuit/${scope}/current.json`, JSON.stringify({ set: currentSetId, name: SET_DATES[idx].name, start: SET_DATES[idx].start, scope, prevSet: prevSetId, transitionWeight: Math.round(wPrev * 100) / 100, totalPlayers: cur.length, players: cur.slice(0, CIRC_MAX) }));
+    const at = [];
+    for (const pl of pub) { const cm = raceSetOf.get(pl.id); if (!cm) continue; let sum = 0, peak = 0, sets = 0; for (const [, sc] of cm) if (sc.points > 0) { sum += sc.points; sets++; if (sc.points > peak) peak = sc.points; } if (sum > 0) at.push({ id: pl.id, h: pl.h, points: sum, peak, sets }); }
+    at.sort((a, b) => b.points - a.points || b.peak - a.peak);
+    writeFileSync(`site/circuit/${scope}/alltime.json`, JSON.stringify({ scope, totalPlayers: at.length, players: at.slice(0, CIRC_MAX) }));
+  };
+
+  let scopeCount = 0;
+  for (const scope of allScopes) {
+    const inScope = scope === "global" ? publicPlayers : publicPlayers.filter((p) => p.scopes.includes(scope));
+    if (!inScope.length) continue;
+    writeScope(scope, inScope.map((p) => ({ id: String(p.id), h: p.handle })));
+    scopeCount++;
   }
-  cur.sort((a, b) => b.points - a.points || b.curPoints - a.curPoints);
-  writeFileSync("site/circuit/current.json", JSON.stringify({ set: currentSetId, name: SET_DATES[idx].name, start: SET_DATES[idx].start, prevSet: prevSetId, transitionWeight: Math.round(wPrev * 100) / 100, totalPlayers: cur.length, players: cur.slice(0, CIRC_MAX) }));
-  // all-time: sum of per-set scores + peak single set (council: sum primary, peak 2nd sort)
-  const at = [];
-  for (const pl of pub) {
-    const cm = raceSetOf.get(pl.id); if (!cm) continue;
-    let sum = 0, peak = 0, sets = 0;
-    for (const [, sc] of cm) if (sc.points > 0) { sum += sc.points; sets++; if (sc.points > peak) peak = sc.points; }
-    if (sum > 0) at.push({ id: pl.id, h: pl.h, points: sum, peak, sets });
-  }
-  at.sort((a, b) => b.points - a.points || b.peak - a.peak);
-  writeFileSync("site/circuit/alltime.json", JSON.stringify({ totalPlayers: at.length, players: at.slice(0, CIRC_MAX) }));
+  const setMeta = startedSets.map((s) => {
+    let n = 0; for (const p of publicPlayers) { const sc = setPoints(String(p.id), s.id); if (sc && sc.points > 0) n++; }
+    return { set: s.id, name: s.name, start: s.start, players: n };
+  });
   writeFileSync("site/circuit/index.json", JSON.stringify({ generatedAt: new Date().toISOString(), currentSet: currentSetId, transitionWeight: Math.round(wPrev * 100) / 100, sets: setMeta }));
-  console.log(`circuit: ${setMeta.length} set shards + current + all-time (current=${currentSetId}, wPrev=${wPrev.toFixed(2)})`);
+  console.log(`circuit: ${scopeCount} scopes × (${startedSets.length} sets + current + all-time), current=${currentSetId}, wPrev=${wPrev.toFixed(2)}`);
 }
 
 const countries = scopeMeta.filter((s) => /^[a-z]{2}$/.test(s.scope) && !CONTINENT_LABELS[s.scope.toUpperCase()]);

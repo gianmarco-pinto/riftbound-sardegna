@@ -18,7 +18,10 @@ const PAGE = 250;
 // records for per run, and how recently-finished events stay "fresh" (re-fetched
 // every run so a late-finalized standing overwrites an intermediate capture).
 const REFRESH_MAX = Number(process.env.REFRESH_MAX || 5000);
-const FRESH_DAYS = Number(process.env.FRESH_DAYS || 21);
+// Small fresh window (re-check recently-finished events for late finalization),
+// kept SEPARATE from the backfill budget so it can't starve it. Was 21d, but a
+// 3-week window holds >>5000 events worldwide and consumed the whole cap.
+const FRESH_DAYS = Number(process.env.FRESH_DAYS || 3);
 // Safety valve for the human factor: if an organizer forgets to mark an event
 // "complete", ingest it anyway once it's this many days past its start (the
 // standings are final the moment the rounds end — closing the event is just an

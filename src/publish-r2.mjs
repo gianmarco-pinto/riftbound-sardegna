@@ -23,10 +23,13 @@ import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 import { AwsClient } from "aws4fetch";
 
-const ENDPOINT = (process.env.R2_ENDPOINT || "").replace(/\/$/, "");
-const ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
-const SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
-const BUCKET = process.env.R2_BUCKET || "riftbound-rankings";
+// .trim() every credential: pasting a secret into GitHub's UI easily appends a
+// trailing newline, which lands in the Authorization header and makes fetch throw
+// "invalid header value" on EVERY request (silent total failure). Trim defends us.
+const ENDPOINT = (process.env.R2_ENDPOINT || "").trim().replace(/\/$/, "");
+const ACCESS_KEY_ID = (process.env.R2_ACCESS_KEY_ID || "").trim();
+const SECRET_ACCESS_KEY = (process.env.R2_SECRET_ACCESS_KEY || "").trim();
+const BUCKET = (process.env.R2_BUCKET || "riftbound-rankings").trim();
 if (!ENDPOINT || !ACCESS_KEY_ID || !SECRET_ACCESS_KEY) {
   console.error("Missing R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY.");
   process.exit(1);
@@ -104,10 +107,14 @@ for (const path of walk("site")) {
   queue.push([key, body]);
 }
 // Concurrent upload pool: 200k+ shards sequentially would blow the CI time limit.
-const CONCURRENCY = Number(process.env.PUBLISH_CONCURRENCY || 12);
+const CONCURRENCY = Number(process.env.PUBLISH_CONCURRENCY || 24);
+const TOL = Number(process.env.PUBLISH_FAIL_TOLERANCE ?? 25);
 let cursor = 0;
 async function worker() {
   for (;;) {
+    // Fail fast: a misconfig (bad creds/endpoint) fails EVERY file. Without this,
+    // the pool grinds through all 232k before checking tolerance — hours wasted.
+    if (failed > TOL) return;
     const i = cursor++;
     if (i >= queue.length) return;
     const [key, body] = queue[i];
@@ -123,7 +130,6 @@ console.log(`Published: ${uploaded} uploaded, ${skipped} unchanged, ${failed} fa
 
 // A handful of files can still 5xx after retries under load. They're dropped from
 // the manifest above, so the NEXT run retries exactly those — they self-heal.
-const TOL = Number(process.env.PUBLISH_FAIL_TOLERANCE ?? 25);
 if (failed > TOL) {
   console.error(`Too many failures (${failed} > tolerance ${TOL}) — failing the run.`);
   process.exit(1);

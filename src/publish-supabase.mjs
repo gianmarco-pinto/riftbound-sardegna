@@ -34,6 +34,21 @@ function* walk(dir) {
 const base = URL.replace(/\/$/, "");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Cache-Control per shard type. Supabase's Smart CDN AUTO-PURGES an object on
+// re-upload, so a long max-age is always fresh-on-update: between publishes the
+// edge serves cached copies (a CDN HIT is NOT billed as egress), and the moment
+// a changed file is re-uploaded the edge cache is invalidated. We only re-upload
+// files whose content hash changed (manifest), so unchanged profiles/events stay
+// edge-cached indefinitely. The old "max-age=60" + a per-minute client buster
+// forced a full origin re-download on every page load and blew the egress quota.
+//   - players/, events/  : huge count, rarely change -> cache hard (1h browser, swr 1w)
+//   - everything else     : leaderboards/circuit refresh each run -> 10min browser, swr 1d
+function cacheControlFor(key) {
+  if (key.startsWith("players/") || key.startsWith("events/"))
+    return "public, max-age=3600, stale-while-revalidate=604800";
+  return "public, max-age=600, stale-while-revalidate=86400";
+}
+
 // Storage occasionally throws transient 5xx during bulk uploads — retry before
 // declaring failure (a single 502 once failed a whole otherwise-green run).
 async function upload(key, body) {
@@ -42,7 +57,7 @@ async function upload(key, body) {
       const res = await fetch(`${base}/storage/v1/object/${BUCKET}/${key}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${KEY}`, apikey: KEY, "Content-Type": "application/json",
-          "x-upsert": "true", "cache-control": "max-age=60" },
+          "x-upsert": "true", "cache-control": cacheControlFor(key) },
         body,
       });
       if (res.ok) return true;

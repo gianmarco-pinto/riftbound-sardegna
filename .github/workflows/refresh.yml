@@ -27,6 +27,9 @@ on:
       countries:
         description: "Ingest countries (IT | IT,FR | * for worldwide)"
         default: ""
+      full_profiles:
+        description: "Force a FULL profile sweep (all players) this run — set to 'true'"
+        default: ""
 
 permissions:
   contents: write   # state release assets
@@ -97,7 +100,11 @@ jobs:
           HRS=20
           F=data/last-full-profiles.txt
           NOW=$(date +%s); LAST=$(cat "$F" 2>/dev/null || echo 0)
-          if [ $(( NOW - LAST )) -ge $(( HRS * 3600 )) ]; then
+          if [ "${{ github.event.inputs.full_profiles }}" = "true" ]; then
+            echo "→ FULL profile sweep this run (forced via full_profiles input)"
+            echo "PROFILE_SCOPES=" >> "$GITHUB_ENV"
+            echo "$NOW" > "$F"
+          elif [ $(( NOW - LAST )) -ge $(( HRS * 3600 )) ]; then
             echo "→ FULL profile sweep this run (all players)"
             echo "PROFILE_SCOPES=" >> "$GITHUB_ENV"
             echo "$NOW" > "$F"

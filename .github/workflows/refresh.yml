@@ -49,6 +49,12 @@ jobs:
       UVS_TOKEN: ${{ secrets.UVS_TOKEN }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      # Cloudflare R2 (S3 API) — rankings data now lives here (free egress, 10GB
+      # free storage). Auth/DB stay on Supabase; only the public bucket moved.
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
       DISCOVER_SCOPE: ${{ github.event.inputs.scope || vars.DISCOVER_SCOPE || 'it' }}
       DISCOVER_LOOKBACK_DAYS: ${{ vars.DISCOVER_LOOKBACK_DAYS || '' }}
       INGEST_COUNTRIES: ${{ github.event.inputs.countries || vars.INGEST_COUNTRIES || 'IT' }}
@@ -101,13 +107,14 @@ jobs:
           fi
       - name: Build site shards
         run: node src/build-site.mjs
-      - name: Publish to Supabase
-        run: node src/publish-supabase.mjs
+      - name: Publish to Cloudflare R2
+        run: node src/publish-r2.mjs
       - name: Upload state (release)
         if: always()
         run: |
           gh release view state >/dev/null 2>&1 || gh release create state --title "pipeline state" --notes "SQLite DB and caches persisted between refresh runs. Machine-managed." --latest=false
-          gh release upload state data/riftbound.db data/nicknames-resolved.json data/publish-manifest.json data/last-full-profiles.txt --clobber
+          touch data/publish-manifest-r2.json
+          gh release upload state data/riftbound.db data/nicknames-resolved.json data/publish-manifest.json data/publish-manifest-r2.json data/last-full-profiles.txt --clobber
       # GitHub's scheduled cron is best-effort and silently skips firings under
       # load, which can stall a backfill for hours. While a large backlog remains,
       # re-trigger the next run ourselves so progress never depends on the cron.

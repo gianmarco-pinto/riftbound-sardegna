@@ -12,7 +12,7 @@
     "build:site": "node src/build-site.mjs",
     "publish:supabase": "node --env-file=.env src/publish-supabase.mjs",
     "publish:r2": "node --env-file=.env src/publish-r2.mjs",
-    "refresh": "npm run discover && npm run ingest && npm run nicknames && npm run rate && npm run build:site && npm run publish:r2",
+    "refresh": "npm run discover && npm run ingest && npm run nicknames && npm run rate && npm run build:site && npm run publish:supabase",
     "serve": "node --env-file-if-exists=.env -e \"import('node:http').then(({default:h})=>import('node:fs').then(({readFileSync,existsSync})=>h.createServer((q,s)=>{let f='site'+(q.url==='/'?'/index.html':q.url.split('?')[0]);if(!existsSync(f)){s.statusCode=404;return s.end('nf')}const t=f.endsWith('.html')?'text/html':f.endsWith('.js')?'text/javascript':f.endsWith('.json')?'application/json':'text/plain';s.setHeader('content-type',t);s.end(readFileSync(f))}).listen(8787,()=>console.log('http://localhost:8787'))))\""
   },
   "dependencies": {

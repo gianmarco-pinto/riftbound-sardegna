@@ -114,8 +114,8 @@ jobs:
           fi
       - name: Build site shards
         run: node src/build-site.mjs
-      - name: Publish to Cloudflare R2
-        run: node src/publish-r2.mjs
+      - name: Publish to Supabase
+        run: node src/publish-supabase.mjs
       - name: Upload state (release)
         if: always()
         run: |

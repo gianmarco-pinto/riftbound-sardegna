@@ -25,6 +25,9 @@ function counts() {
   const c = (t) => { try { return db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c; } catch { return 0; } };
   const r = { players: c("players"), matches: c("matches"), events: c("events"), placements: c("placements") };
   db.close();
+  // Also guard the resolved-nickname map: it shrank 160k->9.5k during the incident,
+  // which made build-site fall back to initials for 93% of players. Treat it as state.
+  try { r.resolved = Object.keys(JSON.parse(readFileSync("data/nicknames-resolved.json", "utf8"))).length; } catch { r.resolved = 0; }
   return r;
 }
 
@@ -34,7 +37,7 @@ if (mode === "check") {
   if (!existsSync(STATS)) { console.log("state-guard: no baseline yet (first run) — current", JSON.stringify(cur)); process.exit(0); }
   const base = JSON.parse(readFileSync(STATS, "utf8"));
   console.log("state-guard: baseline", JSON.stringify(base), "| current", JSON.stringify(cur));
-  const watch = ["players", "matches", "placements"];
+  const watch = ["players", "matches", "placements", "resolved"];
   const shrunk = watch.filter((k) => (base[k] || 0) > 0 && cur[k] < THRESH * base[k]);
   if (shrunk.length) {
     console.error(`::error::state-guard ABORT — ${shrunk.map((k) => `${k}=${cur[k]} (< ${Math.round(THRESH * 100)}% of last-good ${base[k]})`).join("; ")}. The loaded DB looks stale/corrupt; refusing to build/publish/overwrite good state. If this drop is legitimate, re-run with STATE_SHRINK_THRESH lowered.`);

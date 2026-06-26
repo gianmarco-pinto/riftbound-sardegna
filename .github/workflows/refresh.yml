@@ -122,6 +122,9 @@ jobs:
           fi
       - name: Build site shards
         run: node src/build-site.mjs
+      # Inject prevRank into the built shards (weekly position-movement arrows).
+      - name: Inject rank arrows
+        run: node src/rank-arrows.mjs
       - name: Publish to Supabase
         run: node src/publish-supabase.mjs
       - name: Upload state (release)
@@ -134,9 +137,9 @@ jobs:
             exit 0
           fi
           gh release view state >/dev/null 2>&1 || gh release create state --title "pipeline state" --notes "SQLite DB and caches persisted between refresh runs. Machine-managed." --latest=false
-          touch data/publish-manifest-r2.json data/publish-stats.json
+          touch data/publish-manifest-r2.json data/publish-stats.json data/rank-history.json
           node src/state-guard.mjs update   # refresh the known-good baseline from this DB
-          gh release upload state data/riftbound.db data/state-stats.json data/publish-stats.json data/nicknames-resolved.json data/publish-manifest.json data/publish-manifest-r2.json data/last-full-profiles.txt --clobber
+          gh release upload state data/riftbound.db data/state-stats.json data/publish-stats.json data/rank-history.json data/nicknames-resolved.json data/publish-manifest.json data/publish-manifest-r2.json data/last-full-profiles.txt --clobber
           # Versioned backups: keep one dated snapshot per UTC day, retain the last 7,
           # so a corrupt overwrite is always recoverable in ~1 minute.
           DAY=$(date -u +%Y%m%d)

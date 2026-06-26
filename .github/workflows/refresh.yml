@@ -125,6 +125,9 @@ jobs:
       # Inject prevRank into the built shards (weekly position-movement arrows).
       - name: Inject rank arrows
         run: node src/rank-arrows.mjs
+      # Publish global aggregate counts for the homepage stat bar.
+      - name: Site stats
+        run: node src/site-stats.mjs
       - name: Publish to Supabase
         run: node src/publish-supabase.mjs
       - name: Upload state (release)

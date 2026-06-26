@@ -94,9 +94,14 @@ for (const arr of seriesOf.values()) arr.sort((a, b) => String(a.date).localeCom
 // periods, so every event in the same week shares one snapshot rating; we must
 // attribute that week's change to the week's FLAGSHIP event, not split per row.
 
+// Phase B: prefer the EVOLVING rating (rate-evolve.mjs: frozen Glicko base +
+// placement nudges over un-paired/post-lockdown events). Falls back to the frozen
+// `rating` if rate-evolve hasn't run yet (rating_evo NULL) — so this is safe/reversible.
 const ratingRows = db.prepare(`
-  SELECT r.player_id AS id, p.handle, r.rating, r.rd, r.vol,
-         r.games, r.wins, r.losses, r.draws, r.provisional, r.last_date AS lastDate
+  SELECT r.player_id AS id, p.handle,
+         COALESCE(r.rating_evo, r.rating) AS rating,
+         COALESCE(r.rd_evo, r.rd) AS rd, r.vol,
+         COALESCE(r.games_evo, r.games) AS games, r.wins, r.losses, r.draws, r.provisional, r.last_date AS lastDate
   FROM ratings r JOIN players p ON p.id = r.player_id`).all();
 const ratingMap = new Map(ratingRows.map((r) => [r.id, r]));
 

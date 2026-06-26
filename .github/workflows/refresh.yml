@@ -97,6 +97,9 @@ jobs:
       # UVS reopens get_all_rounds; not run anymore (they 403).
       - name: Compute ratings
         run: node src/rate.mjs
+      # Phase B: evolve the frozen rating with placement-only (post-lockdown) events.
+      - name: Evolve rating (Phase B)
+        run: node src/rate-evolve.mjs
       # Heavy full-profile regeneration (~150k shards) runs at most once per ~day;
       # every other run only refreshes leaderboard + IT profiles (the search index
       # is always full, built separately). Keeps frequent runs fast.

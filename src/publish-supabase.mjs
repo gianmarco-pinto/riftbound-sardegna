@@ -19,6 +19,21 @@ const KEY = process.env.SUPABASE_SERVICE_KEY;
 const BUCKET = process.env.SUPABASE_BUCKET || "rankings";
 if (!URL || !KEY) { console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_KEY."); process.exit(1); }
 
+// --- shrink guard (defense-in-depth vs the 2026-06 data-loss incident): refuse to
+// publish a drastically smaller dataset over a good one. Compares the about-to-be-
+// published full player list to the last good publish (data/publish-stats.json). ---
+const PUB_STATS = "data/publish-stats.json";
+const SHRINK_TH = Number(process.env.STATE_SHRINK_THRESH || 0.8);
+let builtPlayers = 0;
+try { const sj = JSON.parse(readFileSync("site/leaderboards/search.json", "utf8")); builtPlayers = (sj.players || sj).length; } catch {}
+try {
+  const prev = JSON.parse(readFileSync(PUB_STATS, "utf8"));
+  if (prev.players > 0 && builtPlayers > 0 && builtPlayers < SHRINK_TH * prev.players) {
+    console.error(`Publish ABORT: built search has ${builtPlayers} players, < ${Math.round(SHRINK_TH * 100)}% of last good ${prev.players}. Refusing to overwrite live data (set STATE_SHRINK_THRESH to override).`);
+    process.exit(1);
+  }
+} catch { /* no baseline yet — first publish */ }
+
 const MANIFEST = "data/publish-manifest.json";
 let manifest = {};
 try { manifest = JSON.parse(readFileSync(MANIFEST, "utf8")); } catch {}
@@ -116,3 +131,6 @@ if (failed > TOL) {
   process.exit(1);
 }
 if (failed) console.log(`(${failed} transient failure(s) within tolerance — they'll retry next run.)`);
+
+// Record this good publish as the new baseline for the shrink guard above.
+try { writeFileSync(PUB_STATS, JSON.stringify({ players: builtPlayers })); } catch {}

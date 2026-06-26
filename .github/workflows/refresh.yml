@@ -69,15 +69,26 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - name: Download state (release, fallback Supabase)
+      - name: Download state (release)
         run: |
           mkdir -p data
-          gh release download state --dir data --clobber || echo "no state release yet"
-          touch data/last-full-profiles.txt
-          if [ ! -f data/riftbound.db ]; then
-            echo "migrating state from Supabase bucket..."
+          if gh release view state >/dev/null 2>&1; then
+            echo "state release exists — downloading"
+            gh release download state --dir data --clobber
+            if [ ! -f data/riftbound.db ]; then
+              echo "::error::state release exists but riftbound.db missing after download — ABORTING (refusing to fall back to a stale DB and overwrite good state)"
+              exit 1
+            fi
+          else
+            echo "no state release yet — one-time bootstrap from Supabase"
             node src/state.mjs download || true
           fi
+          touch data/last-full-profiles.txt
+      # Shrink guard: if the loaded DB is drastically smaller than the last known-good
+      # baseline, the download/fallback gave us stale/corrupt state — abort BEFORE we
+      # build, publish, or overwrite anything. The .state-ok marker gates the upload.
+      - name: Guard — abort if loaded DB shrank vs last good
+        run: node src/state-guard.mjs check && touch data/.state-ok
       - name: Discover events
         run: node src/discover.mjs
       # Match RESULTS now come from the PUBLIC registrations endpoint (player records
@@ -119,9 +130,25 @@ jobs:
       - name: Upload state (release)
         if: always()
         run: |
+          # Marker gate: if the shrink guard didn't pass, NEVER upload — that would
+          # overwrite the last good state with a stale/corrupt DB (the 2026-06 bug).
+          if [ ! -f data/.state-ok ]; then
+            echo "state guard did not pass — SKIPPING state upload to protect the last good state"
+            exit 0
+          fi
           gh release view state >/dev/null 2>&1 || gh release create state --title "pipeline state" --notes "SQLite DB and caches persisted between refresh runs. Machine-managed." --latest=false
-          touch data/publish-manifest-r2.json
-          gh release upload state data/riftbound.db data/nicknames-resolved.json data/publish-manifest.json data/publish-manifest-r2.json data/last-full-profiles.txt --clobber
+          touch data/publish-manifest-r2.json data/publish-stats.json
+          node src/state-guard.mjs update   # refresh the known-good baseline from this DB
+          gh release upload state data/riftbound.db data/state-stats.json data/publish-stats.json data/nicknames-resolved.json data/publish-manifest.json data/publish-manifest-r2.json data/last-full-profiles.txt --clobber
+          # Versioned backups: keep one dated snapshot per UTC day, retain the last 7,
+          # so a corrupt overwrite is always recoverable in ~1 minute.
+          DAY=$(date -u +%Y%m%d)
+          if ! gh release view state --json assets -q '.assets[].name' | grep -qx "riftbound-$DAY.db"; then
+            cp data/riftbound.db "data/riftbound-$DAY.db"
+            gh release upload state "data/riftbound-$DAY.db"
+            rm -f "data/riftbound-$DAY.db"
+            { gh release view state --json assets -q '.assets[].name' | grep -E '^riftbound-[0-9]{8}\.db$' | sort | head -n -7 | while read -r a; do gh release delete-asset state "$a" -y; done; } || true
+          fi
       # GitHub's scheduled cron is best-effort and silently skips firings under
       # load, which can stall a backfill for hours. While a large backlog remains,
       # re-trigger the next run ourselves so progress never depends on the cron.

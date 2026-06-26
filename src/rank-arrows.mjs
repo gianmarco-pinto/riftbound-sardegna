@@ -1,11 +1,12 @@
-// Post-build step: inject prevRank into the already-built leaderboard & circuit
-// shards, by comparing current positions to a weekly snapshot. Runs AFTER
-// build-site, BEFORE publish. Does NOT touch build-site (low risk).
+// Post-build step: inject position-movement deltas into the built leaderboard
+// shards. Runs AFTER build-site, BEFORE publish. Does NOT touch build-site.
 //
-// Semantics: "movement since the start of the current ISO week". A baseline
-// snapshot is captured on the first run of each ISO week (data/rank-history.json,
-// persisted in the state release). Within the week, prevRank = the week-start
-// position, so the frontend shows ▲/▼ vs the start of this week.
+// Two deltas per leaderboard shard (the board renders both views from it):
+//   rankDelta     = change in the RATING rank (ranked, non-provisional rows)
+//   raceRankDelta = change in the CIRCUIT rank (race.points>0, frontend's sort)
+// Positive = moved up. Semantics: movement since the START of the current ISO
+// week (baseline snapshot in data/rank-history.json, persisted in state release,
+// rotated on the first run of each new week).
 //
 //   node src/rank-arrows.mjs   (SITE_DIR=site)
 
@@ -25,46 +26,37 @@ function isoWeek(d = new Date()) {
 
 let hist = {}; try { hist = JSON.parse(readFileSync(HIST, "utf8")); } catch {}
 const week = process.env.WEEK_OVERRIDE || isoWeek();
-const sameWeek = hist.week === week;            // within-week run -> compare to baseline
-const next = { week, r: {}, c: {} };            // new baseline (rebuilt every run; saved when week rolls)
+const sameWeek = hist.week === week;
+const next = { week, r: {}, c: {} };
 let injected = 0;
 
-const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
-
-// --- RATING boards: site/leaderboards/<scope>.json (rows sorted by rating; rank among rated) ---
 const lbDir = join(SITE, "leaderboards");
 if (existsSync(lbDir)) for (const f of readdirSync(lbDir)) {
   if (!f.endsWith(".json") || f === "index.json" || f === "search.json") continue;
   const scope = f.replace(/\.json$/, ""); const path = join(lbDir, f);
-  let shard; try { shard = readJson(path); } catch { continue; }
+  let shard; try { shard = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
   if (!Array.isArray(shard.players)) continue;
-  next.r[scope] = {}; const prev = sameWeek ? (hist.r?.[scope] || {}) : {};
-  let rank = 0;
+  const prevR = sameWeek ? (hist.r?.[scope] || {}) : {};
+  const prevC = sameWeek ? (hist.c?.[scope] || {}) : {};
+  next.r[scope] = {}; next.c[scope] = {};
+
+  // RATING rank: ranked rows only (rated, non-provisional) — matches the board.
+  let rr = 0;
   for (const p of shard.players) {
-    // canonical Rating rank = ranked rows only (rated, non-provisional) — matches
-    // the board's numbering and is filter-independent, so the delta is unambiguous.
     if (p.rated === false || p.provisional) { delete p.rankDelta; continue; }
-    rank++; next.r[scope][p.id] = rank;
-    if (prev[p.id] != null) { p.rankDelta = prev[p.id] - rank; injected++; } else delete p.rankDelta; // + = moved up
+    rr++; next.r[scope][p.id] = rr;
+    if (prevR[p.id] != null) { p.rankDelta = prevR[p.id] - rr; injected++; } else delete p.rankDelta;
   }
+  // CIRCUIT rank: race.points>0, sorted exactly like the frontend.
+  const race = shard.players.filter((p) => (p.race?.points ?? 0) > 0)
+    .sort((a, b) => (b.race.points - a.race.points) || (b.race.first - a.race.first) || a.handle.localeCompare(b.handle));
+  let cr = 0;
+  for (const p of shard.players) delete p.raceRankDelta;
+  for (const p of race) { cr++; next.c[scope][p.id] = cr;
+    if (prevC[p.id] != null) { p.raceRankDelta = prevC[p.id] - cr; injected++; } }
+
   writeFileSync(path, JSON.stringify(shard));
 }
 
-// --- CIRCUIT boards: site/circuit/<scope>/current.json (rows sorted by points) ---
-const cDir = join(SITE, "circuit");
-if (existsSync(cDir)) for (const scope of readdirSync(cDir)) {
-  const cur = join(cDir, scope, "current.json");
-  if (!existsSync(cur)) continue;
-  let shard; try { shard = readJson(cur); } catch { continue; }
-  if (!Array.isArray(shard.players)) continue;
-  next.c[scope] = {}; const prev = sameWeek ? (hist.c?.[scope] || {}) : {};
-  let rank = 0;
-  for (const p of shard.players) { rank++; next.c[scope][p.id] = rank;
-    if (prev[p.id] != null) { p.rankDelta = prev[p.id] - rank; injected++; } else delete p.rankDelta; }
-  writeFileSync(cur, JSON.stringify(shard));
-}
-
-// rotate baseline: only overwrite the saved snapshot when a NEW week begins (so the
-// week-start positions stay fixed all week). First run ever also seeds it.
 if (!sameWeek) writeFileSync(HIST, JSON.stringify(next));
-console.log(`rank-arrows: week ${week} (${sameWeek ? "within-week" : "new week -> baseline rotated"}), prevRank injected on ${injected} rows.`);
+console.log(`rank-arrows: week ${week} (${sameWeek ? "within-week" : "new week -> baseline rotated"}), deltas injected on ${injected} rows.`);

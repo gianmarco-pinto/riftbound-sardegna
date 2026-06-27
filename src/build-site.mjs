@@ -351,11 +351,20 @@ for (const pr of db.prepare("SELECT pl.player_id pid, pl.wins w, pl.losses l, pl
   if ((pr.date || "") > r.last) r.last = pr.date || "";
 }
 
+// Career match-win % per player (floored at 1/3, MTG-standard), used to compute
+// each player's career OMW% = average of their opponents' match-win %.
+const careerMw = new Map();
+for (const p of ratingRows) {
+  const g = (p.wins ?? 0) + (p.losses ?? 0) + (p.draws ?? 0);
+  if (g > 0) careerMw.set(String(p.id), Math.max(1 / 3, (3 * (p.wins ?? 0) + (p.draws ?? 0)) / (3 * g)));
+}
+
 const players = ratingRows.map((p) => {
   let bestWin = null, worstLoss = null;
   const oppSet = new Set();
   const evSet = new Set();
   let oppSum = 0, oppN = 0;
+  let omwSum = 0, omwN = 0;     // career OMW%: mean of opponents' match-win %
   let gW = 0, gL = 0;            // game-level wins/losses (GWP%), only where game data exists
   const seq = [];               // chronological W/L/D sequence (matchesByPlayer is date-ASC)
   for (const m of matchesByPlayer.get(p.id) || []) {
@@ -366,6 +375,8 @@ const players = ratingRows.map((p) => {
       oppSet.add(oppId);
       const oppCur = ratingMap.get(oppId)?.rating;
       if (oppCur != null) { oppSum += oppCur; oppN++; }
+      const oppMw = careerMw.get(String(oppId));
+      if (oppMw != null) { omwSum += oppMw; omwN++; }
     }
     const won = (m.winner === "A" && meA) || (m.winner === "B" && !meA);
     const lost = (m.winner === "A" && !meA) || (m.winner === "B" && meA);
@@ -380,6 +391,7 @@ const players = ratingRows.map((p) => {
     if (lost && (!worstLoss || oppRating < worstLoss.oppRating)) worstLoss = rec;
   }
   const avgOpp = oppN ? Math.round(oppSum / oppN) : 0;
+  const omw = omwN ? Math.round(omwSum / omwN * 1000) / 10 : null;   // career OMW% (1 dp)
   // Streak & form (from the chronological sequence) + GWP% (game win %).
   let bestStreak = 0, run = 0;
   for (const r of seq) { if (r === "W") { run++; if (run > bestStreak) bestStreak = run; } else run = 0; }
@@ -400,7 +412,7 @@ const players = ratingRows.map((p) => {
     // (raw locally, deflated globally) and ranked by the conservative CR = x - K*RD.
     rating: deflateRating(p.rating, avgOpp), ratingRaw: Math.round(p.rating), rd: p.rd, vol: p.vol,
     games: p.games, wins: p.wins, losses: p.losses, draws: p.draws, events: evSet.size,
-    provisional, avgOpp, lastDate: p.lastDate, country: homeCountryOf.get(String(p.id)) || null,
+    provisional, avgOpp, omw, lastDate: p.lastDate, country: homeCountryOf.get(String(p.id)) || null,
     regions: [...(scopesOf.get(p.id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
     scopes: [...(scopesOf.get(p.id) || [])],
     series: seriesOf.get(p.id) || [],
@@ -428,7 +440,7 @@ for (const id of raceOf.keys()) {
     handle: handleOf(handleById.get(String(id)), id),
     rating: null, rd: null, vol: null,
     games: rec.w + rec.l + rec.d, wins: rec.w, losses: rec.l, draws: rec.d,
-    provisional: true, avgOpp: 0, lastDate: rec.last, country: homeCountryOf.get(String(id)) || null,
+    provisional: true, avgOpp: 0, omw: null, lastDate: rec.last, country: homeCountryOf.get(String(id)) || null,
     regions: [...(scopesOf.get(id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
     scopes: [...(scopesOf.get(id) || [])],
     series: [], bestWin: null, worstLoss: null,

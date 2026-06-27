@@ -99,6 +99,19 @@ async function ingest(ev) {
 }
 
 // ---- main ----
+// Self-heal: earlier ingests stored games_a/games_b = 0 on every match (the game
+// score was read from a non-existent per-player field instead of the match-level
+// games_won_by_winner/loser). Re-queue those events so they re-pull with correct
+// scores. Self-limiting: once fixed (a winner has >=1 game), they no longer match.
+if (!INSPECT) {
+  const r = db.prepare(`
+    UPDATE events SET pairings_at = NULL
+    WHERE pairings_at IS NOT NULL AND id IN (
+      SELECT event_id FROM matches WHERE is_bye = 0 AND games_a IS NOT NULL
+      GROUP BY event_id HAVING MAX(games_a) = 0 AND MAX(games_b) = 0)`).run();
+  if (r.changes) log(`self-heal: re-queued ${r.changes} events with zero game scores (will re-pull with the fixed adapter)`);
+}
+
 const todo = targets();
 log(`ingest-pairings: ${INSPECT ? "INSPECT" : "INGEST"} | ${todo.length} event(s) | host ${config.HOST} | delay ${config.DELAY_MS}ms`);
 

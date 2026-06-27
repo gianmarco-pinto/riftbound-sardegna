@@ -130,6 +130,11 @@ export async function getRoundMatches(roundId) {
  */
 export function hydraToRaw(m) {
   const rels = m.player_match_relationships || m.players || m.player_relationships || [];
+  // Game scores live at the MATCH level (games_won_by_winner / games_won_by_loser),
+  // keyed by winning_player — NOT on the per-player relationship (which has no
+  // games field). Map each player's games_won via the winner id.
+  const win = m.winning_player ?? null;
+  const gWin = m.games_won_by_winner ?? 0, gLose = m.games_won_by_loser ?? 0;
   const players = rels.map((r, i) => {
     const p = r.player || r.user || r.player_event_status?.player || {};
     // Prefer the per-event NICKNAME (user_event_status.best_identifier, e.g.
@@ -138,11 +143,13 @@ export function hydraToRaw(m) {
     // player identifier, then resolve-nicknames fills any gaps later.
     const ues = r.user_event_status || {};
     const handle = ues.best_identifier || ues.display_name || p.best_identifier || p.user_identifier || p.display_name;
-    return {
-      player_order: r.player_order ?? r.order ?? r.seat ?? i,
-      games_won: r.games_won ?? r.games_won_count ?? r.wins ?? 0,
-      player: { id: p.id, best_identifier: handle },
-    };
+    const order = r.player_order ?? r.order ?? r.seat ?? i;
+    // Decided match → winner gets gWin, loser gets gLose. Draw (no winner) →
+    // split by order (rare; the match is recorded as a draw regardless).
+    const games_won = win != null
+      ? (String(p.id) === String(win) ? gWin : gLose)
+      : (order <= 1 ? gWin : gLose);
+    return { player_order: order, games_won, player: { id: p.id, best_identifier: handle } };
   });
   return {
     id: m.id,

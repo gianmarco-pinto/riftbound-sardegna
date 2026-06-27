@@ -110,6 +110,12 @@ for (const sql of [
   // Phase-B placement estimate); set = exact Glicko from real pairings. This is
   // how we tell "exact" events apart from "estimated" ones post-lockdown.
   "ALTER TABLE events ADD COLUMN pairings_at TEXT",
+  // GAME counts per match (best-of-N: e.g. 2-1). The old pipeline stored only the
+  // WINNER, not the game score; the hydraproxy pairings carry per-player games_won,
+  // enabling GWP% (game win %) + the real Swiss tiebreakers. NULL on historical
+  // (pre-lockdown) matches that predate this column.
+  "ALTER TABLE matches ADD COLUMN games_a INTEGER",
+  "ALTER TABLE matches ADD COLUMN games_b INTEGER",
 ]) { try { db.exec(sql); } catch { /* already there */ } }
 
 // --- prepared upserts ---
@@ -254,16 +260,19 @@ export const upsertPlayer = (id, handle, date) =>
   _player.run(id, handle && handle !== "Unknown" ? handle : null, date ?? null, date ?? null);
 
 const _match = db.prepare(`
-  INSERT INTO matches (id,event_id,round_id,round_number,tbl,date,is_bye,player_a,player_b,winner)
-  VALUES (?,?,?,?,?,?,?,?,?,?)
+  INSERT INTO matches (id,event_id,round_id,round_number,tbl,date,is_bye,player_a,player_b,winner,games_a,games_b)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(id) DO UPDATE SET
     event_id=excluded.event_id, round_id=excluded.round_id, round_number=excluded.round_number,
     tbl=excluded.tbl, date=excluded.date, is_bye=excluded.is_bye,
-    player_a=excluded.player_a, player_b=excluded.player_b, winner=excluded.winner`);
+    player_a=excluded.player_a, player_b=excluded.player_b, winner=excluded.winner,
+    games_a=COALESCE(excluded.games_a, matches.games_a),
+    games_b=COALESCE(excluded.games_b, matches.games_b)`);
 export const upsertMatch = (m) =>
   _match.run(m.matchId, m.eventId ?? null, m.roundId ?? null, m.roundNumber ?? null,
     m.table ?? null, m.date ?? null, m.isBye ? 1 : 0,
-    m.playerA?.id ?? null, m.playerB?.id ?? null, m.winner ?? null);
+    m.playerA?.id ?? null, m.playerB?.id ?? null, m.winner ?? null,
+    m.gamesA ?? null, m.gamesB ?? null);
 
 // --- rating writers ---
 export const clearRatings = () => { db.exec("DELETE FROM ratings; DELETE FROM rating_snapshots;"); };

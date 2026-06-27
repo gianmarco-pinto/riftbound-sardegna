@@ -72,7 +72,8 @@ for (const e of eventsRows) {
 }
 
 const matchRows = db.prepare(`
-  SELECT id, event_id AS eventId, date, player_a AS a, player_b AS b, winner
+  SELECT id, event_id AS eventId, date, player_a AS a, player_b AS b, winner,
+         games_a AS ga, games_b AS gb
   FROM matches
   WHERE is_bye = 0 AND winner IS NOT NULL AND player_a IS NOT NULL AND player_b IS NOT NULL
   ORDER BY date ASC`).all();
@@ -355,6 +356,8 @@ const players = ratingRows.map((p) => {
   const oppSet = new Set();
   const evSet = new Set();
   let oppSum = 0, oppN = 0;
+  let gW = 0, gL = 0;            // game-level wins/losses (GWP%), only where game data exists
+  const seq = [];               // chronological W/L/D sequence (matchesByPlayer is date-ASC)
   for (const m of matchesByPlayer.get(p.id) || []) {
     const meA = m.a === p.id;
     const oppId = meA ? m.b : m.a;
@@ -366,6 +369,9 @@ const players = ratingRows.map((p) => {
     }
     const won = (m.winner === "A" && meA) || (m.winner === "B" && !meA);
     const lost = (m.winner === "A" && !meA) || (m.winner === "B" && meA);
+    seq.push(won ? "W" : lost ? "L" : "D");
+    // GWP%: count games only where the source carried a score (new-pairing events).
+    if (m.ga != null && m.gb != null) { gW += meA ? m.ga : m.gb; gL += meA ? m.gb : m.ga; }
     const oppRating = snapAt.get(`${oppId}:${m.eventId}`);
     if (oppRating == null) continue;
     const rec = { oppId, oppHandle: handleOf(ratingMap.get(oppId)?.handle, oppId), oppRating,
@@ -374,6 +380,14 @@ const players = ratingRows.map((p) => {
     if (lost && (!worstLoss || oppRating < worstLoss.oppRating)) worstLoss = rec;
   }
   const avgOpp = oppN ? Math.round(oppSum / oppN) : 0;
+  // Streak & form (from the chronological sequence) + GWP% (game win %).
+  let bestStreak = 0, run = 0;
+  for (const r of seq) { if (r === "W") { run++; if (run > bestStreak) bestStreak = run; } else run = 0; }
+  let curT = null, curN = 0;
+  for (let i = seq.length - 1; i >= 0; i--) { if (curT == null) { curT = seq[i]; curN = 1; } else if (seq[i] === curT) curN++; else break; }
+  const form = seq.slice(-10).reverse();   // last 10 results, most-recent first
+  const gN = gW + gL;
+  const gwp = gN ? Math.round(1000 * gW / gN) / 10 : null;   // one decimal, null if no game data
   // Established only if a real sample: enough distinct events AND games AND a tight
   // enough RD (a 3-event/31-game hot streak with RD 83 must NOT rank). Plus the
   // legacy opponent floor / base-provisional flags.
@@ -391,6 +405,10 @@ const players = ratingRows.map((p) => {
     scopes: [...(scopesOf.get(p.id) || [])],
     series: seriesOf.get(p.id) || [],
     bestWin, worstLoss,
+    // streak/form (always available from matches) + game-level GWP% (null until
+    // new-pairing events accumulate game scores — historical matches lack them).
+    form, streak: curT ? { type: curT, n: curN } : null, bestStreak,
+    gwp, gameWins: gN ? gW : null, gameLosses: gN ? gL : null,
     palmares: [...(palmaresOf.get(String(p.id)) || new Map())]
       .sort((a, b) => b[0] - a[0])
       .map(([tier, c]) => ({ tier, label: TIERS[tier], ...c })),
@@ -414,6 +432,7 @@ for (const id of raceOf.keys()) {
     regions: [...(scopesOf.get(id) || [])].filter((k) => k === "sardegna").map(() => "Sardegna"),
     scopes: [...(scopesOf.get(id) || [])],
     series: [], bestWin: null, worstLoss: null,
+    form: [], streak: null, bestStreak: 0, gwp: null, gameWins: null, gameLosses: null,
     palmares: [...(palmaresOf.get(String(id)) || new Map())].sort((a, b) => b[0] - a[0]).map(([tier, c]) => ({ tier, label: TIERS[tier], ...c })),
     majors: (majorsOf.get(String(id)) || []).sort((a, b) => b.tier - a.tier || a.rank - b.rank),
     race: raceOf.get(String(id)) || { points: 0, events: 0, first: 0, second: 0, third: 0 },
@@ -677,8 +696,10 @@ for (const p of profilePlayers) {
       const oppId = meA ? m.b : m.a;
       const result = m.winner === "draw" ? "D"
         : ((m.winner === "A" && meA) || (m.winner === "B" && !meA)) ? "W" : "L";
+      const hasG = m.ga != null && m.gb != null;
       return { id: m.id, oppId, oppHandle: playerById.get(oppId)?.handle || "?",
-        result, date: m.date, eventId: m.eventId, eventName: events[m.eventId]?.name || "" };
+        result, date: m.date, eventId: m.eventId, eventName: events[m.eventId]?.name || "",
+        gf: hasG ? (meA ? m.ga : m.gb) : null, ga: hasG ? (meA ? m.gb : m.ga) : null };
     });
   const positions = (positionsOf.get(p.id) || []).slice()
     .sort((a, b) => scopeWeight(a.scope) - scopeWeight(b.scope) || a.scope.localeCompare(b.scope));

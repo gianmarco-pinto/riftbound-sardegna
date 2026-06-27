@@ -32,7 +32,7 @@ export function matchToCanonical(match, ctx) {
 
   // Bye: a single participant (or flagged). Recorded but excluded from rating.
   if (match?.match_is_bye || players.length === 1) {
-    return { ...base(match, ctx), isBye: true, playerA: toPlayer(players[0]), playerB: null, winner: null };
+    return { ...base(match, ctx), isBye: true, playerA: toPlayer(players[0]), playerB: null, winner: null, gamesA: null, gamesB: null };
   }
   // 1v1 only — skip multiplayer pods.
   if (players.length !== 2) return null;
@@ -63,6 +63,9 @@ export function matchToCanonical(match, ctx) {
     playerA: toPlayer(a),
     playerB: toPlayer(b),
     winner,
+    // Game score (best-of-N). null when the source didn't carry per-player games.
+    gamesA: a?.games_won ?? null,
+    gamesB: b?.games_won ?? null,
   };
 }
 

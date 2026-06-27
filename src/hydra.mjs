@@ -132,10 +132,16 @@ export function hydraToRaw(m) {
   const rels = m.player_match_relationships || m.players || m.player_relationships || [];
   const players = rels.map((r, i) => {
     const p = r.player || r.user || r.player_event_status?.player || {};
+    // Prefer the per-event NICKNAME (user_event_status.best_identifier, e.g.
+    // "Feldherr9999") over the player-level identifier (an initial-form real
+    // name like "Andreas K"): better for display AND for GDPR. Falls back to the
+    // player identifier, then resolve-nicknames fills any gaps later.
+    const ues = r.user_event_status || {};
+    const handle = ues.best_identifier || ues.display_name || p.best_identifier || p.user_identifier || p.display_name;
     return {
       player_order: r.player_order ?? r.order ?? r.seat ?? i,
       games_won: r.games_won ?? r.games_won_count ?? r.wins ?? 0,
-      player: { id: p.id, best_identifier: p.best_identifier || p.user_identifier || p.display_name },
+      player: { id: p.id, best_identifier: handle },
     };
   });
   return {

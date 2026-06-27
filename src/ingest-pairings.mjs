@@ -63,6 +63,10 @@ async function inspect(eventId) {
   const ms = await getRoundMatches(rounds[0].roundId);
   log(`round ${rounds[0].roundId}: ${ms.length} match(es)`);
   if (ms[0]) {
+    const r0 = (ms[0].player_match_relationships || ms[0].players || [])[0];
+    log(`match keys: ${Object.keys(ms[0]).join(", ")}`);
+    log(`relationship keys: ${r0 ? Object.keys(r0).join(", ") : "?"}`);
+    log(`GAME FIELDS: winning_player=${ms[0].winning_player} games_won_by_winner=${ms[0].games_won_by_winner} games_won_by_loser=${ms[0].games_won_by_loser} games_drawn=${ms[0].games_drawn} | rel.games_won=${r0?.games_won}`);
     log(`raw match[0]:\n${JSON.stringify(ms[0], null, 1).slice(0, 1800)}`);
     const canon = matchToCanonical(hydraToRaw(ms[0]), { eventId, roundId: rounds[0].roundId, roundNumber: rounds[0].roundNumber, date: ev.start_datetime || ev.date || null });
     log(`canonical[0]: ${JSON.stringify(canon)}`);

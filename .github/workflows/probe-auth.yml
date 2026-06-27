@@ -1,0 +1,22 @@
+# One-off manual probe: test if a fresh authenticated session can read exact
+# pairings (get_all_rounds). Token stays in the PROBE_TOKEN secret. Read-only.
+name: probe-auth-pairings
+on:
+  workflow_dispatch:
+    inputs:
+      event_ids:
+        description: "Comma-separated event ids (leave blank for defaults; a LIVE event is best)"
+        default: ""
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Probe
+        env:
+          PROBE_TOKEN: ${{ secrets.PROBE_TOKEN }}
+          EVENT_IDS: ${{ github.event.inputs.event_ids }}
+        run: node src/probe-auth-pairings.mjs

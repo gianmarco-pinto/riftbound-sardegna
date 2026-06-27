@@ -161,7 +161,10 @@ export const eventsNeedingPairings = (limit, sinceDate) => db.prepare(`
   WHERE e.date >= ? AND e.pairings_at IS NULL
     AND EXISTS (SELECT 1 FROM placements p WHERE p.event_id = e.id)
     AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.event_id = e.id)
-  ORDER BY e.date DESC LIMIT ?`).all(sinceDate, limit);
+  ORDER BY
+    CASE WHEN e.country = 'IT' THEN 0 ELSE 1 END,  -- project-core scope fills first
+    e.date DESC                                     -- then newest first
+  LIMIT ?`).all(sinceDate, limit);
 
 // Stamp when an event's authoritative W/L/D was fetched from registrations.
 export const markResults = (id) =>

@@ -106,6 +106,10 @@ jobs:
           LIVE_TOKEN: ${{ secrets.LIVE_TOKEN }}
           PROBE_TOKEN: ${{ secrets.PROBE_TOKEN }}
           PAIRINGS_MAX: ${{ vars.PAIRINGS_MAX || '150' }}
+          # Backfill floor: only events on/after this date are eligible for pairing
+          # recovery. Tunable via repo var to widen the window and recover older
+          # placements-only events the pre-lockdown pipeline missed.
+          SINCE_DATE: ${{ vars.PAIRINGS_SINCE || '2026-06-01' }}
         run: node src/ingest-pairings.mjs
       # Token-health alert: ingest-pairings writes data/token-status (ok|expired|
       # unknown). On "expired" open a GitHub issue (assigned → email notification);

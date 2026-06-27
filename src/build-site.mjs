@@ -715,6 +715,47 @@ console.log(`players: ${profilePlayers.length} profile shards${PROFILE_SCOPES.le
 // result row on a profile is clickable → the tournament's complete ranking, each
 // player clickable. W/L/D from registrations (new events) or derived from matches.
 const handleOfId = new Map(publicPlayers.map((p) => [String(p.id), p.handle]));
+
+// REAL Swiss tiebreakers (OMW% / GW% / OGW%), computed per event from the exact
+// matches — ONLY for events whose matches carry GAME SCORES (the new-pairing
+// events; historical pre-lockdown matches stored only the winner). Gating on
+// game data keeps this bounded → memory-safe (build-site already runs near the
+// heap cap). Standard MTG formulas with the 1/3 floor on each opponent term.
+const FLOOR = 1 / 3;
+const tbByEvent = new Map(); // eid -> Map(pid -> {opps:Set, mw,ml,md, gf,gl})
+for (const m of matchRows) {
+  if (m.ga == null || m.gb == null) continue; // need game scores for GW%/OGW%
+  let pm = tbByEvent.get(m.eventId);
+  if (!pm) { pm = new Map(); tbByEvent.set(m.eventId, pm); }
+  const rec = (pid) => { let x = pm.get(pid); if (!x) { x = { opps: new Set(), mw: 0, ml: 0, md: 0, gf: 0, gl: 0 }; pm.set(pid, x); } return x; };
+  const A = rec(m.a), B = rec(m.b);
+  A.opps.add(m.b); B.opps.add(m.a);
+  A.gf += m.ga; A.gl += m.gb; B.gf += m.gb; B.gl += m.ga;
+  if (m.winner === "draw") { A.md++; B.md++; }
+  else if (m.winner === "A") { A.mw++; B.ml++; }
+  else { B.mw++; A.ml++; }
+}
+const tbFinal = new Map(); // eid -> Map(pid -> {omw, gw, ogw}) as percent (1 dp)
+for (const [eid, pm] of tbByEvent) {
+  const mwp = new Map(), gwp = new Map();
+  for (const [pid, x] of pm) {
+    const mp = x.mw + x.ml + x.md, gp = x.gf + x.gl;
+    mwp.set(pid, mp ? Math.max(FLOOR, (3 * x.mw + x.md) / (3 * mp)) : FLOOR);
+    gwp.set(pid, gp ? Math.max(FLOOR, x.gf / gp) : FLOOR);
+  }
+  const out = new Map();
+  for (const [pid, x] of pm) {
+    const opps = [...x.opps];
+    const avg = (f) => opps.length ? opps.reduce((s, o) => s + f(o), 0) / opps.length : FLOOR;
+    out.set(pid, {
+      omw: Math.round(avg((o) => mwp.get(o) ?? FLOOR) * 1000) / 10,
+      gw: Math.round((gwp.get(pid) ?? FLOOR) * 1000) / 10,
+      ogw: Math.round(avg((o) => gwp.get(o) ?? FLOOR) * 1000) / 10,
+    });
+  }
+  tbFinal.set(eid, out);
+}
+
 const standByEvent = new Map(); // eid -> { part, rows:[] }
 for (const r of db.prepare("SELECT event_id eid, player_id pid, rank, participants, wins, losses, draws FROM placements").all()) {
   const pid = String(r.pid);
@@ -722,8 +763,10 @@ for (const r of db.prepare("SELECT event_id eid, player_id pid, rank, participan
   let a = standByEvent.get(r.eid);
   if (!a) { a = { part: r.participants, rows: [] }; standByEvent.set(r.eid, a); }
   const der = r.wins == null ? recOf.get(`${pid}:${r.eid}`) : null;
+  const tb = tbFinal.get(r.eid)?.get(pid);
   a.rows.push({ id: pid, h: handleOfId.get(pid), rank: r.rank,
-    w: r.wins ?? der?.w ?? null, l: r.losses ?? der?.l ?? null, d: r.draws ?? der?.d ?? null });
+    w: r.wins ?? der?.w ?? null, l: r.losses ?? der?.l ?? null, d: r.draws ?? der?.d ?? null,
+    omw: tb?.omw ?? null, gw: tb?.gw ?? null, ogw: tb?.ogw ?? null });
 }
 rmSync("site/events", { recursive: true, force: true });
 mkdirSync("site/events", { recursive: true });

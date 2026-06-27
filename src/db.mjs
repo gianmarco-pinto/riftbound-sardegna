@@ -105,6 +105,11 @@ for (const sql of [
   // UVS `display_status` (upcoming / in_progress / complete ...). We only ingest
   // results once it's "complete" — never process a tournament still running.
   "ALTER TABLE events ADD COLUMN status TEXT",
+  // When we last pulled EXACT pairings for this event from the authenticated
+  // hydraproxy backend (ingest-pairings). NULL = no real matches (rating uses the
+  // Phase-B placement estimate); set = exact Glicko from real pairings. This is
+  // how we tell "exact" events apart from "estimated" ones post-lockdown.
+  "ALTER TABLE events ADD COLUMN pairings_at TEXT",
 ]) { try { db.exec(sql); } catch { /* already there */ } }
 
 // --- prepared upserts ---
@@ -133,6 +138,24 @@ export const upsertEvent = (e) =>
 // --- incremental ingestion state ---
 export const markIngested = (id) =>
   db.prepare("UPDATE events SET ingested_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+
+// Stamp when EXACT pairings were pulled from the authenticated hydraproxy backend.
+export const markPairings = (id) =>
+  db.prepare("UPDATE events SET pairings_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+
+/** The post-lockdown GAP: concluded events we have standings for (placements)
+ *  but NO exact pairings yet (matches absent AND pairings never pulled). These
+ *  currently rely on the Phase-B estimate; pulling their real pairings upgrades
+ *  them to exact Glicko. Bounded by a lockdown floor (no point re-pulling the
+ *  pre-lockdown history — it already has real matches in the DB) and capped per
+ *  run so it's resumable. Newest first (what people look at), with officials
+ *  surfaced via the separate official refresh. */
+export const eventsNeedingPairings = (limit, sinceDate) => db.prepare(`
+  SELECT e.id, e.date, e.name FROM events e
+  WHERE e.date >= ? AND e.pairings_at IS NULL
+    AND EXISTS (SELECT 1 FROM placements p WHERE p.event_id = e.id)
+    AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.event_id = e.id)
+  ORDER BY e.date DESC LIMIT ?`).all(sinceDate, limit);
 
 // Stamp when an event's authoritative W/L/D was fetched from registrations.
 export const markResults = (id) =>

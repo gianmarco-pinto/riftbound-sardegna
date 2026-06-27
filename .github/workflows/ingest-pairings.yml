@@ -1,0 +1,58 @@
+# Manual test harness for the live-pairings ingest. Token stays in the LIVE_TOKEN
+# secret (a logged-in session token — refresh it after each re-login). Read-only
+# in INSPECT mode; INGEST writes matches into the state DB.
+#
+# Run INSPECT first on a known event (545120) to lock the JSON shapes, then flip
+# inspect=false to actually ingest. State DB is pulled from / pushed to the
+# `state` GitHub Release, same as refresh.yml.
+name: ingest-pairings
+on:
+  workflow_dispatch:
+    inputs:
+      event_ids:
+        description: "Comma-separated event ids (blank = auto-pick the post-lockdown gap)"
+        default: "545120"
+      inspect:
+        description: "Inspect only (dump JSON shapes, write nothing)?"
+        type: boolean
+        default: true
+      max_events:
+        description: "Cap when auto-picking (event_ids blank)"
+        default: "50"
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Restore state DB from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          if gh release download state --pattern riftbound.db --dir data 2>/dev/null; then
+            echo "state DB restored ($(du -h data/riftbound.db | cut -f1))"
+          else
+            echo "::warning::no state release yet — INSPECT is fine, INGEST would start empty"
+          fi
+      - name: Ingest pairings
+        env:
+          # LIVE_TOKEN preferred; falls back to the existing PROBE_TOKEN secret
+          # (set during the spike) so we can test without re-adding a secret.
+          LIVE_TOKEN: ${{ secrets.LIVE_TOKEN }}
+          PROBE_TOKEN: ${{ secrets.PROBE_TOKEN }}
+          EVENT_IDS: ${{ github.event.inputs.event_ids }}
+          INSPECT: ${{ github.event.inputs.inspect == 'true' && '1' || '0' }}
+          MAX_EVENTS: ${{ github.event.inputs.max_events }}
+        run: node src/ingest-pairings.mjs
+      - name: Push updated state DB back to release
+        if: ${{ github.event.inputs.inspect != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f data/riftbound.db ]; then
+            gh release upload state data/riftbound.db --clobber
+            echo "state DB pushed back"
+          fi

@@ -33,7 +33,7 @@ on:
 
 permissions:
   contents: write   # state release assets
-  issues: write     # probe-pairings opens an issue if UVS reopens get_all_rounds
+  issues: write     # probe-pairings + live-token alert open/close issues
 
 concurrency:
   group: refresh-rankings
@@ -93,6 +93,44 @@ jobs:
       - name: Probe — did UVS reopen exact pairings?
         run: node src/probe-pairings.mjs
         continue-on-error: true
+      # Recover EXACT pairings for the post-lockdown GAP (events with standings but
+      # no matches) from the authenticated hydraproxy backend — the same one the
+      # locator website uses. Auto-picks the gap (eventsNeedingPairings). Once an
+      # event's real matches land, rate.mjs rates it exactly and Phase B drops out
+      # (rate-evolve skips events that have matches). continue-on-error so an expired
+      # session token can NEVER break the pipeline — it just pauses pairing recovery
+      # (the next step raises an alert) and new events fall back to the Phase-B estimate.
+      - name: Ingest live pairings (gap recovery)
+        continue-on-error: true
+        env:
+          LIVE_TOKEN: ${{ secrets.LIVE_TOKEN }}
+          PROBE_TOKEN: ${{ secrets.PROBE_TOKEN }}
+          PAIRINGS_MAX: ${{ vars.PAIRINGS_MAX || '150' }}
+        run: node src/ingest-pairings.mjs
+      # Token-health alert: ingest-pairings writes data/token-status (ok|expired|
+      # unknown). On "expired" open a GitHub issue (assigned → email notification);
+      # on "ok" auto-close it. The session token expires, so this is how we learn.
+      - name: Live-token health alert
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          STATUS=$(cat data/token-status 2>/dev/null || echo unknown)
+          echo "live-token status: $STATUS"
+          OPEN=$(gh issue list --state open --search "LIVE_TOKEN in:title" --json number -q '.[0].number // empty' 2>/dev/null || echo "")
+          if [ "$STATUS" = "expired" ]; then
+            echo "::warning::LIVE_TOKEN expired — live-pairings ingest paused (new events use the Phase-B estimate)."
+            if [ -z "$OPEN" ]; then
+              gh issue create \
+                --title "⚠️ LIVE_TOKEN scaduto — ingest pairing in pausa" \
+                --body $'@gianmarco-pinto il token di sessione (secret **LIVE_TOKEN**, fallback PROBE_TOKEN) è scaduto: il recupero dei pairing live è in pausa e i nuovi eventi usano la stima Fase B finché non lo rinnovi.\n\n**Come risolvere (2 minuti):**\n1. Apri https://locator.riftbound.uvsgames.com da loggato.\n2. DevTools → Network → una richiesta a `api.cloudflare.riftbound.uvsgames.com` → Request Headers → copia il valore di `authorization` (`Token <hex>`).\n3. Settings → Secrets and variables → Actions → aggiorna il secret **LIVE_TOKEN**.\n4. Questa issue si chiude da sola al prossimo run riuscito.\n\n(Non incollare il token in chat — solo nel secret.)' \
+                && echo "alert issue opened" || echo "issue create failed (non-fatal)"
+            else
+              echo "alert issue already open (#$OPEN) — not duplicating"
+            fi
+          elif [ "$STATUS" = "ok" ] && [ -n "$OPEN" ]; then
+            gh issue close "$OPEN" --comment "Token valido di nuovo ✓ — ingest pairing ripreso." && echo "closed alert issue #$OPEN" || true
+          fi
       # Legacy pairing ingest + round-standings are kept in the repo (frozen) in case
       # UVS reopens get_all_rounds; not run anymore (they 403).
       - name: Compute ratings

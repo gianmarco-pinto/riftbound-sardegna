@@ -21,6 +21,14 @@ on:
         default: "50"
 permissions:
   contents: write   # upload the updated state DB back to the `state` release
+
+# Share refresh's concurrency group: this workflow writes the same `state` release
+# DB, so it must NEVER run alongside refresh (concurrent state-release writers
+# caused the 2026-06 nickname-map regression). Queues behind/ahead, never parallel.
+concurrency:
+  group: refresh-rankings
+  cancel-in-progress: false
+
 jobs:
   ingest:
     runs-on: ubuntu-latest

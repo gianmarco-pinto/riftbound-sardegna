@@ -24,9 +24,16 @@ import { matchToCanonical } from "./normalize.mjs";
 import {
   upsertPlayer, upsertMatch, markPairings, eventsNeedingPairings, transaction, db,
 } from "./db.mjs";
+import { writeFileSync } from "node:fs";
 
 const INSPECT = process.env.INSPECT === "1";
-const MAX_EVENTS = Number(process.env.MAX_EVENTS || 100);
+// Dedicated cap (NOT the job-level MAX_EVENTS, which is 800 for registrations):
+// each pairings run pulls many rounds/event so keep it bounded + polite.
+const MAX_EVENTS = Number(process.env.PAIRINGS_MAX || process.env.MAX_EVENTS || 100);
+// Token-health marker the workflow reads to open/close an alert issue.
+const STATUS_FILE = process.env.TOKEN_STATUS_FILE || "data/token-status";
+const isExpired = (m) => /\b401\b|missing live_token/i.test(m || "");
+const writeStatus = (s) => { try { writeFileSync(STATUS_FILE, s); } catch { /* data/ may not exist in some local runs */ } };
 // Lockdown floor: events on/after this date are the gap worth backfilling
 // (pre-lockdown events already carry real matches). Override with SINCE_DATE.
 const SINCE = process.env.SINCE_DATE || "2026-06-15";
@@ -91,21 +98,35 @@ async function ingest(ev) {
 const todo = targets();
 log(`ingest-pairings: ${INSPECT ? "INSPECT" : "INGEST"} | ${todo.length} event(s) | host ${config.HOST} | delay ${config.DELAY_MS}ms`);
 
+let tokenExpired = false, verified = false;
 if (INSPECT) {
-  for (const ev of todo) await inspect(ev.id);
+  for (const ev of todo) {
+    try { await inspect(ev.id); verified = true; }
+    catch (e) { log(`inspect ${ev.id} failed: ${e.message}`); if (isExpired(e.message)) { tokenExpired = true; break; } }
+  }
 } else {
   let ok = 0, totalMatches = 0, totalRated = 0, failed = 0;
   for (const ev of todo) {
     try {
       const r = await ingest(ev);
-      ok++; totalMatches += r.matches; totalRated += r.rated;
+      ok++; verified = true; totalMatches += r.matches; totalRated += r.rated;
       log(`  ✓ ${ev.id} ${(ev.date || "").slice(0, 10)} — ${r.rounds} rounds, ${r.matches} matches (${r.rated} rated)`);
     } catch (e) {
       failed++;
       log(`  ✗ ${ev.id}: ${e.message}`);
+      // A 401 means the session token is dead — no point hammering the rest;
+      // stop, flag it, and let the workflow raise the alert (pipeline continues
+      // on Phase B for new events until the token is refreshed).
+      if (isExpired(e.message)) { tokenExpired = true; log("→ token expired/missing: stopping (alert will be raised)."); break; }
     }
     await sleep(config.DELAY_MS);
   }
   log(`\nDone: ${ok} events ingested (${totalMatches} matches, ${totalRated} rated), ${failed} failed.`);
   log(`DB total matches: ${db.prepare("SELECT COUNT(*) c FROM matches").get().c}.`);
 }
+
+// Marker: "expired" → open alert; "ok" → close any open alert; "unknown" → leave
+// as-is (nothing was actually verified this run, e.g. no gap events to process).
+const status = tokenExpired ? "expired" : (verified ? "ok" : "unknown");
+writeStatus(status);
+if (tokenExpired) log("::warning::LIVE_TOKEN expired — live-pairings ingest paused; rating falls back to the Phase-B estimate until the secret is refreshed.");

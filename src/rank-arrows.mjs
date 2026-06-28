@@ -58,5 +58,32 @@ if (existsSync(lbDir)) for (const f of readdirSync(lbDir)) {
   writeFileSync(path, JSON.stringify(shard));
 }
 
+// CIRCUIT shards (circuit/<scope>/<key>.json: alltime | <setId> | current). These
+// power the Circuito All-time / Per-set views, which read their OWN shards (not the
+// leaderboard ones), so they need their own movement delta `d`. Rows are already
+// sorted by points → rank = index. Baseline keyed by "<scope>/<key>" in hist.cc.
+// Frozen past seasons simply never move (d absent/0 → no arrow).
+next.cc = {};
+const circDir = join(SITE, "circuit");
+if (existsSync(circDir)) for (const scope of readdirSync(circDir)) {
+  const scopeDir = join(circDir, scope);
+  let files; try { files = readdirSync(scopeDir); } catch { continue; } // skip index.json (a file)
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    const key = `${scope}/${f.replace(/\.json$/, "")}`;
+    const path = join(scopeDir, f);
+    let shard; try { shard = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+    if (!Array.isArray(shard.players)) continue;
+    const prev = sameWeek ? (hist.cc?.[key] || {}) : {};
+    next.cc[key] = {};
+    let r = 0;
+    for (const p of shard.players) {
+      r++; next.cc[key][p.id] = r;
+      if (prev[p.id] != null) { p.d = prev[p.id] - r; injected++; } else delete p.d;
+    }
+    writeFileSync(path, JSON.stringify(shard));
+  }
+}
+
 if (!sameWeek) writeFileSync(HIST, JSON.stringify(next));
 console.log(`rank-arrows: week ${week} (${sameWeek ? "within-week" : "new week -> baseline rotated"}), deltas injected on ${injected} rows.`);

@@ -515,6 +515,22 @@ const lbRow = (p) => ({
 });
 rmSync("site/leaderboards", { recursive: true, force: true });
 mkdirSync("site/leaderboards", { recursive: true });
+
+// Global rating DISTRIBUTION — a tiny histogram (counts per bucket) of the
+// established player pool, so the profile can draw a "you are here" curve and a
+// percentile. Established only (rating set, not provisional) = the ranked
+// population a percentile is meaningful against.
+const distRatings = publicPlayers.filter((p) => p.rating != null && !p.provisional).map((p) => p.rating).sort((a, b) => a - b);
+if (distRatings.length >= 20) {
+  const total = distRatings.length;
+  const min = distRatings[0], max = distRatings[total - 1];
+  const width = Math.max(10, Math.ceil((max - min) / 40)); // ~40 buckets
+  const counts = new Array(Math.floor((max - min) / width) + 1).fill(0);
+  for (const r of distRatings) counts[Math.floor((r - min) / width)]++;
+  const at = (q) => distRatings[Math.min(total - 1, Math.floor(total * q))];
+  writeFileSync("site/leaderboards/distribution.json", JSON.stringify({ total, min, max, width, counts, p50: at(0.5), p90: at(0.9), p99: at(0.99) }));
+}
+
 const scopeMeta = [];
 // Players appearing in ANY leaderboard shard: these are the only ones a visitor
 // can click/search to open a profile, so their profile shards must always be

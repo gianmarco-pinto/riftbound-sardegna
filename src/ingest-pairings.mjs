@@ -22,7 +22,7 @@
 import { discoverRoundIds, getRoundMatches, getEventDetail, hydraToRaw, config } from "./hydra.mjs";
 import { matchToCanonical } from "./normalize.mjs";
 import {
-  upsertPlayer, upsertMatch, markPairings, eventsNeedingPairings, transaction, db,
+  upsertPlayer, upsertMatch, markPairings, eventsNeedingPairings, eventsNeedingGameScores, transaction, db,
 } from "./db.mjs";
 import { writeFileSync } from "node:fs";
 
@@ -43,7 +43,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function targets() {
   const ids = (process.env.EVENT_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
   if (ids.length) return ids.map((id) => ({ id: Number(id), date: null, name: null }));
-  return eventsNeedingPairings(MAX_EVENTS, SINCE);
+  // 1) the post-lockdown GAP (events with standings but no matches) — priority.
+  // 2) GAME-SCORE backfill: old-pipeline events (winner only) across ALL history,
+  //    re-pulled to add exact 2-1/0-2 scores. Gap first, then fill the cap.
+  const gap = eventsNeedingPairings(MAX_EVENTS, SINCE);
+  const seen = new Set(gap.map((e) => e.id));
+  const scores = eventsNeedingGameScores(MAX_EVENTS).filter((e) => !seen.has(e.id));
+  return [...gap, ...scores].slice(0, MAX_EVENTS);
 }
 
 // ---- INSPECT: lock the real JSON shapes, change nothing ----
@@ -77,7 +83,10 @@ async function inspect(eventId) {
 async function ingest(ev) {
   let canon = [];
   const rounds = await discoverRoundIds(ev.id, { log: () => {} });
-  if (!rounds.length) throw new Error("no rounds discovered (run INSPECT to find the round shape)");
+  // No rounds = nothing retrievable for this event (genuine, not a network error —
+  // those throw earlier). Stamp pairings_at so it isn't retried every run forever
+  // (matters for the all-history game-score backfill of un-pullable old events).
+  if (!rounds.length) { transaction(() => markPairings(ev.id)); return { rounds: 0, matches: 0, rated: 0 }; }
   for (const r of rounds) {
     const ms = await getRoundMatches(r.roundId);
     for (const m of ms) {

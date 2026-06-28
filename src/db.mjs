@@ -166,20 +166,6 @@ export const eventsNeedingPairings = (limit, sinceDate) => db.prepare(`
     e.date DESC                                     -- then newest first
   LIMIT ?`).all(sinceDate, limit);
 
-/** Events whose matches were ingested by the OLD pipeline (winner only, no game
- *  score: games_a IS NULL) — re-pulling their pairings backfills the exact 2-1/0-2
- *  scores. NO date floor: covers ALL history. Self-limiting: pairings_at is stamped
- *  on (re)pull, so each event is attempted once even if no scores come back. IT +
- *  newest first so the project core and recent events fill before the long tail. */
-export const eventsNeedingGameScores = (limit) => db.prepare(`
-  SELECT e.id, e.date, e.name FROM events e
-  WHERE e.pairings_at IS NULL
-    AND EXISTS (SELECT 1 FROM matches m WHERE m.event_id = e.id AND m.is_bye = 0 AND m.games_a IS NULL)
-  ORDER BY
-    CASE WHEN e.country = 'IT' THEN 0 ELSE 1 END,
-    e.date DESC
-  LIMIT ?`).all(limit);
-
 // Stamp when an event's authoritative W/L/D was fetched from registrations.
 export const markResults = (id) =>
   db.prepare("UPDATE events SET results_at = ? WHERE id = ?").run(new Date().toISOString(), id);

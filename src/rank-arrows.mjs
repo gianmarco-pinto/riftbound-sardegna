@@ -85,5 +85,14 @@ if (existsSync(circDir)) for (const scope of readdirSync(circDir)) {
   }
 }
 
-if (!sameWeek) writeFileSync(HIST, JSON.stringify(next));
+if (!sameWeek) {
+  writeFileSync(HIST, JSON.stringify(next));
+} else if (!hist.cc) {
+  // The circuit baseline (cc) was added mid-week, so it was never captured by a
+  // week rotation. Bootstrap it NOW — preserving the existing rating/race
+  // baselines (r/c) so their arrows don't reset — so circuit arrows can start
+  // showing on the NEXT run instead of waiting for the next ISO week.
+  writeFileSync(HIST, JSON.stringify({ week: hist.week, r: hist.r || {}, c: hist.c || {}, cc: next.cc }));
+  console.log("rank-arrows: bootstrapped circuit baseline (cc) mid-week.");
+}
 console.log(`rank-arrows: week ${week} (${sameWeek ? "within-week" : "new week -> baseline rotated"}), deltas injected on ${injected} rows.`);

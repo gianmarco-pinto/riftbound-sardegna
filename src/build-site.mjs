@@ -725,8 +725,12 @@ for (const p of profilePlayers) {
       const result = m.winner === "draw" ? "D"
         : ((m.winner === "A" && meA) || (m.winner === "B" && !meA)) ? "W" : "L";
       const hasG = m.ga != null && m.gb != null;
+      // Opponent's rating: at the event (snapshot) if available, else their current
+      // rating — shows the "value" of each head-to-head result.
+      const oppRating = snapAt.get(`${oppId}:${m.eventId}`) ?? ratingMap.get(oppId)?.rating ?? null;
       return { id: m.id, oppId, oppHandle: playerById.get(oppId)?.handle || "?",
         result, date: m.date, eventId: m.eventId, eventName: events[m.eventId]?.name || "",
+        oppRating: oppRating != null ? Math.round(oppRating) : null,
         gf: hasG ? (meA ? m.ga : m.gb) : null, ga: hasG ? (meA ? m.gb : m.ga) : null };
     });
   const positions = (positionsOf.get(p.id) || []).slice()

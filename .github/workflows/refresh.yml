@@ -205,17 +205,33 @@ jobs:
       # the chain would loop forever doing ~nothing. Normal incremental updates ride
       # the 2h cron; the chain only kicks in after a big drop-in (e.g. a tournament
       # weekend dumps thousands of new events at once).
-      - name: Self-chain while a large backlog remains
-        if: always()
+      # GitHub's scheduled cron is best-effort and silently skips firings (observed
+      # 5h gaps), which staled recent results. Two self-chain triggers keep data
+      # current WITHOUT depending on the cron:
+      #   (a) large backlog (> 8000) — a big drop-in (tournament-weekend dump);
+      #   (b) FRESH concluded events whose results we haven't fetched yet
+      #       (status='complete' AND results_at IS NULL). Self-limiting: every
+      #       processed event gets results_at stamped (even empty standings) so it
+      #       leaves the count → converges, no infinite loop. Threshold avoids
+      #       chaining for a trivial trickle.
+      # Gated on success() (NOT always()): a failed run must NOT re-trigger itself,
+      # or it would loop on a persistent failure / pile up runs.
+      - name: Self-chain (large backlog OR fresh unfetched results) — cron-independent freshness
+        if: success()
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+          FRESH_CHAIN_MIN: ${{ vars.FRESH_CHAIN_MIN || '50' }}
         run: |
           if [ -z "$GH_TOKEN" ]; then echo "WORKFLOW_PAT not set — self-chain disabled (relying on cron)"; exit 0; fi
           PENDING=$(node -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync('data/riftbound.db');console.log(db.prepare('SELECT COUNT(*) c FROM events WHERE ingested_at IS NULL AND date < ?').get(new Date().toISOString()).c);}).catch(()=>console.log(0))")
-          echo "pending past events: $PENDING"
+          FRESH=$(node -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync('data/riftbound.db');console.log(db.prepare(\"SELECT COUNT(*) c FROM events WHERE status='complete' AND results_at IS NULL AND date < ?\").get(new Date().toISOString()).c);}).catch(()=>console.log(0))")
+          echo "pending past events: $PENDING | fresh concluded-unfetched: $FRESH (threshold $FRESH_CHAIN_MIN)"
           if [ "${PENDING:-0}" -gt 8000 ]; then
             echo "large backlog (> 8000) → re-triggering next run (cron-independent)"
             gh workflow run refresh.yml -f max_events=12000
+          elif [ "${FRESH:-0}" -gt "${FRESH_CHAIN_MIN:-50}" ]; then
+            echo "fresh concluded events ($FRESH > $FRESH_CHAIN_MIN) with results not yet fetched → re-triggering to stay current"
+            gh workflow run refresh.yml
           else
-            echo "no large backlog (<= 8000) → leaving incremental updates to the 2h schedule"
+            echo "nothing to chain → next update rides the 2h cron"
           fi

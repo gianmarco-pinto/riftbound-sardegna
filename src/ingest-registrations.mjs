@@ -7,7 +7,7 @@
 // Incremental: finished events not yet results-ingested, newest first. (Historical
 // W/L/D is NOT re-fetched — it's derived from the exact `matches` we already have,
 // in build-site.) Concurrency keeps the per-event registration fetches quick.
-import { db, upsertPlayer, markIngested, markResults, resultsToRefresh, transaction } from "./db.mjs";
+import { db, upsertPlayer, markIngested, markResults, resultsToRefresh, emptyToRecheck, transaction } from "./db.mjs";
 
 const BASE = "https://api.riftbound.uvsgames.com";
 const MAX_EVENTS = Number(process.env.MAX_EVENTS || 12000);
@@ -27,6 +27,11 @@ const FRESH_DAYS = Number(process.env.FRESH_DAYS || 3);
 // standings are final the moment the rounds end — closing the event is just an
 // admin flag). The ≤FRESH_DAYS re-refresh still corrects it if they close/edit later.
 const FORCE_AFTER_DAYS = Number(process.env.FORCE_AFTER_DAYS || 5);
+// Re-check recently-concluded EMPTY events (0 placements) for this many days, in
+// case a store enters standings late (Nexus Night = an official tier, often filled
+// a couple of days after). Runs on the refresh budget, not newTargets, so it can't
+// starve fresh ingestion; short window so it doesn't re-scan empties forever.
+const EMPTY_RECHECK_DAYS = Number(process.env.EMPTY_RECHECK_DAYS || 4);
 
 const putPlacement = db.prepare(`
   INSERT INTO placements (event_id, player_id, rank, participants, wins, losses, draws)
@@ -80,10 +85,13 @@ const newTargets = db.prepare(`
     AND (status = 'complete' OR status IS NULL OR date < ?)
   ORDER BY date DESC LIMIT ?`).all(forceCutoff, MAX_EVENTS);
 const refreshTargets = resultsToRefresh(REFRESH_MAX, FRESH_DAYS);
-const seenIds = new Set(newTargets.map((e) => e.id));
-const targets = [...newTargets, ...refreshTargets.filter((e) => !seenIds.has(e.id))];
+const emptyTargets = emptyToRecheck(EMPTY_RECHECK_DAYS);
+const seen = new Set(newTargets.map((e) => e.id));
+const extra = [];
+for (const e of [...refreshTargets, ...emptyTargets]) if (!seen.has(e.id)) { seen.add(e.id); extra.push(e); }
+const targets = [...newTargets, ...extra];
 
-console.log(`Ingest: ${newTargets.length} new + ${targets.length - newTargets.length} W/L/D refresh = ${targets.length} events (conc ${CONC})...`);
+console.log(`Ingest: ${newTargets.length} new + ${refreshTargets.length} W/L/D refresh + ${emptyTargets.length} empty-recheck = ${targets.length} events (conc ${CONC})...`);
 let okEvents = 0, okPlacements = 0, empty = 0, errored = 0;
 
 async function handle(ev) {
@@ -102,15 +110,14 @@ async function handle(ev) {
           placed++;
         }
       }
-      // Mark done (stop re-listing in newTargets) when: we got standings; OR the
-      // event is old enough to give up; OR the source confirms it's EMPTY (0
-      // registrations) AND it concluded >24h ago. Empty concluded store events
-      // (casual "Nexus Night"/"Open Play" the store lists but never fills) would
-      // otherwise re-fetch every run, burning the 800-event budget and starving
-      // real but slightly older events at the bottom of the date-DESC queue. The
-      // >24h guard protects a real tournament whose standings are entered a few
-      // hours late: a just-concluded empty event keeps being re-checked for a day.
-      if (placed > 0 || ageDays > GIVE_UP_DAYS || (participants === 0 && ageDays > 1)) markIngested(ev.id);
+      // Mark done (stop re-listing in the primary newTargets queue) when we got
+      // standings, OR the event is old enough to give up, OR the source confirms
+      // it's EMPTY (0 registrations). An empty event would otherwise re-fetch every
+      // run, burning the 800-event budget and starving real but slightly older
+      // events at the bottom of the date-DESC queue. Late standings are NOT lost:
+      // emptyToRecheck re-checks recently-concluded empties for EMPTY_RECHECK_DAYS
+      // on the separate refresh budget (a Nexus Night filled 2-3 days late is caught).
+      if (placed > 0 || ageDays > GIVE_UP_DAYS || participants === 0) markIngested(ev.id);
       markResults(ev.id); // stamp: authoritative W/L/D pulled (or confirmed absent)
     });
     okPlacements += placed;

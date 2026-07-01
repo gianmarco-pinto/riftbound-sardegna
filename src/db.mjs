@@ -199,6 +199,22 @@ export const resultsToRefresh = (backfillLimit, freshDays) => {
   return [...backfill, ...fresh.filter((e) => !seen.has(e.id))];
 };
 
+/** Recently-concluded events that came back EMPTY (0 placements) — re-checked for a
+ *  few days in case the store enters standings LATE (e.g. a Nexus Night, an official
+ *  organized-play tier, filled 2-3 days after it ends). newTargets marks empties
+ *  ingested so they leave the primary 800-budget queue (no starvation); this re-check
+ *  runs on the refresh budget and is bounded by a short window, so a late-filled real
+ *  event is still captured without re-scanning empties forever. */
+export const emptyToRecheck = (days) => {
+  const now = new Date().toISOString();
+  const cutoff = new Date(Date.now() - days * 864e5).toISOString();
+  return db.prepare(`
+    SELECT e.id, e.date FROM events e
+    WHERE e.date < ? AND e.date > ? AND e.results_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM placements p WHERE p.event_id = e.id)
+    ORDER BY e.date DESC`).all(now, cutoff);
+};
+
 /** Past events in enabled countries not yet ingested.
  *  countries = ["*"] disables the country gate (worldwide ingestion).
  *  Priority: ALREADY-LIVE scopes first (IT — the published site must stay

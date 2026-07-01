@@ -237,27 +237,31 @@ jobs:
           fi
       # A GREEN run does NOT prove fresh data: build+publish re-emit a new
       # generatedAt even if nothing was ingested. So we alert on the DATA, not the
-      # timestamp. STALE = concluded events (status='complete') older than a 6h grace
-      # window still not results-fetched; healthy state ≈ 0 (cron+self-chain keep up).
-      # If it backs up, the pipeline is behind → open an issue (email). Also alerts
-      # if WORKFLOW_PAT is missing (self-chain silently disabled). Both auto-close
-      # when healthy. always() so a stall is caught even on a failing run.
+      # timestamp. STALE = concluded events (status='complete') older than a 12h grace
+      # window still not results-fetched. NOTE on calibration: healthy steady state is
+      # NOT ~0 — it's ~100-250. US events conclude overnight UTC and drain through the
+      # morning, and empty-standings complete events get re-listed each run; that's
+      # normal churn, not a stall. So the threshold sits well ABOVE that band (400): a
+      # REAL stall (cron+self-chain both dead for many hours) buries this in thousands.
+      # If it backs up past the threshold → open an issue (email). Also alerts if
+      # WORKFLOW_PAT is missing (self-chain silently disabled). Both auto-close when
+      # healthy. always() so a stall is caught even on a failing run.
       - name: Pipeline health alert (data freshness + self-chain PAT)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
-          STALE_MAX: ${{ vars.STALE_ALERT_MAX || '100' }}
+          STALE_MAX: ${{ vars.STALE_ALERT_MAX || '400' }}
         run: |
-          STALE=$(node -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync('data/riftbound.db');const cut=new Date(Date.now()-6*3600e3).toISOString();console.log(db.prepare(\"SELECT COUNT(*) c FROM events WHERE status='complete' AND results_at IS NULL AND date < ?\").get(cut).c);}).catch(()=>console.log(-1))")
-          echo "stale concluded-unfetched (>6h old): $STALE (threshold $STALE_MAX)"
+          STALE=$(node -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync('data/riftbound.db');const cut=new Date(Date.now()-12*3600e3).toISOString();console.log(db.prepare(\"SELECT COUNT(*) c FROM events WHERE status='complete' AND results_at IS NULL AND date < ?\").get(cut).c);}).catch(()=>console.log(-1))")
+          echo "stale concluded-unfetched (>12h old): $STALE (threshold $STALE_MAX)"
           FOPEN=$(gh issue list --state open --search "DATI IN RITARDO in:title" --json number -q '.[0].number // empty' 2>/dev/null || echo "")
-          if [ "${STALE:-0}" -gt "${STALE_MAX:-100}" ]; then
-            echo "::warning::Freschezza dati: $STALE eventi conclusi da >6h non ancora ingeriti."
+          if [ "${STALE:-0}" -gt "${STALE_MAX:-400}" ]; then
+            echo "::warning::Freschezza dati: $STALE eventi conclusi da >12h non ancora ingeriti."
             if [ -z "$FOPEN" ]; then
               gh issue create \
                 --title "⚠️ DATI IN RITARDO — risultati recenti non aggiornati" \
-                --body $'@gianmarco-pinto la pipeline è indietro: ci sono eventi conclusi da oltre 6 ore con i risultati ancora non ingeriti, quindi classifiche e Rating non includono gli ultimi tornei.\n\n**Cause tipiche:**\n1. Il cron di GitHub ha saltato i giri (best-effort) e il self-chain non sta recuperando.\n2. Il secret **WORKFLOW_PAT** è scaduto/assente → self-chain disattivato (vedi eventuale issue dedicata).\n3. Una run sta fallendo (controlla la tab Actions).\n\n**Come sbloccare:** Actions → "refresh-rankings" → Run workflow (giro manuale). Se si ripete, rinnova il WORKFLOW_PAT. Questa issue si chiude da sola quando i dati tornano aggiornati.' \
+                --body $'@gianmarco-pinto la pipeline è indietro: ci sono molti eventi conclusi da oltre 12 ore con i risultati ancora non ingeriti, quindi classifiche e Rating non includono gli ultimi tornei.\n\n**Cause tipiche:**\n1. Il cron di GitHub ha saltato i giri (best-effort) e il self-chain non sta recuperando.\n2. Il secret **WORKFLOW_PAT** è scaduto/assente → self-chain disattivato (vedi eventuale issue dedicata).\n3. Una run sta fallendo (controlla la tab Actions).\n\n**Come sbloccare:** Actions → "refresh-rankings" → Run workflow (giro manuale). Se si ripete, rinnova il WORKFLOW_PAT. Questa issue si chiude da sola quando i dati tornano aggiornati.' \
                 && echo "freshness alert opened" || echo "issue create failed (non-fatal)"
             else
               echo "freshness alert already open (#$FOPEN) — not duplicating"

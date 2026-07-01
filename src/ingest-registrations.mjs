@@ -104,10 +104,13 @@ async function handle(ev) {
       }
       // Mark done (stop re-listing in newTargets) when: we got standings; OR the
       // event is old enough to give up; OR the source confirms it's EMPTY (0
-      // registrations) — an empty CONCLUDED event will never gain standings, so
-      // re-fetching it every run just burns the 800-event budget and starves real
-      // but slightly older events at the bottom of the date-DESC queue.
-      if (placed > 0 || ageDays > GIVE_UP_DAYS || participants === 0) markIngested(ev.id);
+      // registrations) AND it concluded >24h ago. Empty concluded store events
+      // (casual "Nexus Night"/"Open Play" the store lists but never fills) would
+      // otherwise re-fetch every run, burning the 800-event budget and starving
+      // real but slightly older events at the bottom of the date-DESC queue. The
+      // >24h guard protects a real tournament whose standings are entered a few
+      // hours late: a just-concluded empty event keeps being re-checked for a day.
+      if (placed > 0 || ageDays > GIVE_UP_DAYS || (participants === 0 && ageDays > 1)) markIngested(ev.id);
       markResults(ev.id); // stamp: authoritative W/L/D pulled (or confirmed absent)
     });
     okPlacements += placed;

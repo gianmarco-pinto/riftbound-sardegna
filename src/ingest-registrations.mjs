@@ -102,7 +102,12 @@ async function handle(ev) {
           placed++;
         }
       }
-      if (placed > 0 || ageDays > GIVE_UP_DAYS) markIngested(ev.id);
+      // Mark done (stop re-listing in newTargets) when: we got standings; OR the
+      // event is old enough to give up; OR the source confirms it's EMPTY (0
+      // registrations) — an empty CONCLUDED event will never gain standings, so
+      // re-fetching it every run just burns the 800-event budget and starves real
+      // but slightly older events at the bottom of the date-DESC queue.
+      if (placed > 0 || ageDays > GIVE_UP_DAYS || participants === 0) markIngested(ev.id);
       markResults(ev.id); // stamp: authoritative W/L/D pulled (or confirmed absent)
     });
     okPlacements += placed;
